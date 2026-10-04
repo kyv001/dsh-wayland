@@ -133,6 +133,8 @@ docs/
   `load_default_theme`），所以退化成"较小的自带箭头"，**不是没有指针**——`wayland_check` 的
   cursor 行就是照这个口径写的。停放点的选择同理：`session.pointer` 以前一直记 (0,0)，而合成器
   实际在输出中心，创建时显式 move 到中心后，记账和图里的精灵才对得上。
+  实测截图见 [docs/cursor-demo.png](docs/cursor-demo.png)：窗口裁剪路径下 terminal 里的 I 形文本光标，
+  右下角红框是放大示意（截图本身是 `wayland_screenshot` 原样产物加注释）。
 
 ### 3.4 鉴权
 
