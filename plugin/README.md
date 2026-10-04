@@ -258,6 +258,10 @@ Registered under `/dsh-wayland` on the DSH web server.
   Every call needs the `x-dsh-wayland-token` header (or `?token=`).
 - The token is also written to `<sessionRoot>/token` (mode 0600) and injected
   into the page as `window.__DSH_WAYLAND__` for the panel.
+- Status codes: `403` bad or missing token; `404` unknown endpoint; `404` with
+  `{ code: "unknown_session" }` when the named session no longer exists (the panel
+  drops the picture and re-reads the list instead of polling a dead id); anything
+  else the handler rejects is `400`.
 
 ## Known limitations
 

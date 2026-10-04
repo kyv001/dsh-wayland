@@ -374,7 +374,13 @@ function createManager(ctx, cfg) {
       /* With no session to name, a missing toolchain is the likelier cause than a
          typo, so report the dependency problem instead of a bare "unknown". */
       if (known.length === 0) requireToolchain('No Wayland session is running and none can be started')
-      throw new Error(`unknown wayland session ${JSON.stringify(id ?? null)}${known.length ? `; known: ${known.join(', ')}` : '; no sessions exist yet'}`)
+      const error = new Error(`unknown wayland session ${JSON.stringify(id ?? null)}${known.length ? `; known: ${known.join(', ')}` : '; no sessions exist yet'}`)
+      /* The panel polls /frame for the session it is showing. It has to be able to
+         tell "that session is gone" from "that request was malformed": the first
+         means drop the picture and re-read the list, the second means the request
+         itself is wrong. Everything else is a 400. */
+      error.code = 'unknown_session'
+      throw error
     }
     return session
   }
@@ -2151,7 +2157,13 @@ function apply(ctx, config) {
       }
       sendJson(res, 404, { error: `unknown endpoint ${sub}` })
     } catch (error) {
-      sendJson(res, 400, { error: error?.message ?? String(error) })
+      /* A session that no longer exists is 404 (with a code the panel can act on),
+         not a malformed request; everything else here is a bad request. */
+      const unknown = error?.code === 'unknown_session'
+      sendJson(res, unknown ? 404 : 400, {
+        error: error?.message ?? String(error),
+        ...(unknown ? { code: error.code } : {}),
+      })
     }
   }
 

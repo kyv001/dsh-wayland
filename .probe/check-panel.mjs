@@ -23,8 +23,16 @@
  *     what drives the frame request;
  *   - the missing-dependency screen names each binary with a translated purpose
  *     and shows the Host's install lines.
+ *
+ * The last section renders the panel a second way: with hooks that really run, a
+ * fake clock, a fake Host and the real HTTP contract. Markup checks cannot catch a
+ * bug in an effect, and the one users hit was exactly that — closing the last
+ * session left the frame loop polling a dead id (404 forever) with the last
+ * picture still on screen. So that section asserts the lifecycle: a live session
+ * shows a frame, and a session that disappears stops being polled, drops its
+ * picture and falls back to the "no sessions" screen.
  */
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createContext, runInContext } from 'node:vm'
@@ -69,6 +77,171 @@ function makeReact() {
   }
 }
 
+/**
+ * React with hooks that really run: state updates re-render, effects fire on
+ * dependency changes, and cleanups run when an effect re-fires. Only what this
+ * panel calls is implemented.
+ */
+function makeLiveReact() {
+  let hooks = []
+  let cursor = 0
+  let pending = []
+  let dirty = false
+  const sameDeps = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length
+    && a.every((value, index) => Object.is(value, b[index]))
+  return {
+    beginRender() { cursor = 0; pending = [] },
+    takeDirty() { const value = dirty; dirty = false; return value },
+    flushEffects() {
+      const queued = pending
+      pending = []
+      for (const entry of queued) {
+        if (typeof entry.previous === 'function') entry.previous()
+        const cleanup = entry.fn()
+        const hook = hooks[entry.slot]
+        if (hook) hook.cleanup = typeof cleanup === 'function' ? cleanup : undefined
+      }
+      return queued.length
+    },
+    React: {
+      createElement: (type, props, ...children) => ({
+        type,
+        props: { ...(props ?? {}), children: children.length <= 1 ? children[0] : children },
+      }),
+      useState: (initial) => {
+        const slot = cursor++
+        if (!(slot in hooks)) hooks[slot] = { value: typeof initial === 'function' ? initial() : initial }
+        const hook = hooks[slot]
+        return [hook.value, (next) => {
+          const value = typeof next === 'function' ? next(hook.value) : next
+          if (Object.is(value, hook.value)) return
+          hook.value = value
+          dirty = true
+        }]
+      },
+      useReducer: (reducer, initial) => {
+        const slot = cursor++
+        if (!(slot in hooks)) hooks[slot] = { value: initial }
+        const hook = hooks[slot]
+        return [hook.value, (action) => { hook.value = reducer(hook.value, action); dirty = true }]
+      },
+      useRef: (initial) => {
+        const slot = cursor++
+        if (!(slot in hooks)) hooks[slot] = { current: initial }
+        return hooks[slot]
+      },
+      useCallback: (fn, deps) => {
+        const slot = cursor++
+        const previous = hooks[slot]
+        if (!previous || !sameDeps(previous.deps, deps)) hooks[slot] = { deps, fn }
+        return hooks[slot].fn
+      },
+      useEffect: (fn, deps) => {
+        const slot = cursor++
+        const previous = hooks[slot]
+        const changed = !previous || !deps || !sameDeps(previous.deps, deps)
+        if (changed) pending.push({ slot, fn, previous: previous?.cleanup })
+        hooks[slot] = { deps, cleanup: changed ? undefined : previous?.cleanup }
+      },
+    },
+  }
+}
+
+/**
+ * A clock the test drives: nothing fires until `advance` says so, which is what
+ * makes "did the panel stop polling?" a question with an answer.
+ */
+function makeClock() {
+  let now = 0
+  let nextId = 1
+  const timers = new Map()
+  const schedule = (fn, ms, every) => {
+    const id = nextId++
+    timers.set(id, { fn, due: now + Math.max(0, Number(ms) || 0), every })
+    return id
+  }
+  return {
+    now: () => now,
+    setTimeout: (fn, ms) => schedule(fn, ms, 0),
+    setInterval: (fn, ms) => schedule(fn, ms, Number(ms) || 1),
+    clearTimeout: (id) => { timers.delete(id) },
+    clearInterval: (id) => { timers.delete(id) },
+    pending: () => timers.size,
+    /** Fire everything due within `ms`, earliest first, letting promises settle. */
+    async advance(ms) {
+      const deadline = now + ms
+      for (let guard = 0; guard < 2000; guard++) {
+        let next = null
+        for (const [id, timer] of timers) {
+          if (timer.due > deadline) continue
+          if (!next || timer.due < next.timer.due) next = { id, timer }
+        }
+        if (!next) break
+        now = next.timer.due
+        if (next.timer.every) next.timer.due = now + next.timer.every
+        else timers.delete(next.id)
+        next.timer.fn()
+        await settleMicrotasks()
+      }
+      if (deadline > now) now = deadline
+    },
+  }
+}
+
+/** Let every pending promise continuation run. */
+const settleMicrotasks = () => new Promise((resolve) => setImmediate(resolve))
+
+/**
+ * A fake Host that behaves like the real one where it matters: `/boot` hands out
+ * the token, `/api` answers `sessions.list` from a mutable list, and `/frame`
+ * answers 404 + `unknown_session` for any session that is not in that list —
+ * which is exactly what the reported bug ran into.
+ */
+function makeFakeHost() {
+  const host = {
+    token: 'probe-token',
+    live: { fps: 20, quality: 82, mediaType: 'image/jpeg' },
+    toolchain: { ready: true, mode: 'PATH', binDir: '', required: [], optional: [], missingRequired: [], missingOptional: [], installHints: [] },
+    sessions: [],
+    frames: new Set(),
+    requests: [],
+    urls: 0,
+    createObjectURL: () => `blob:probe/${++host.urls}`,
+    revokeObjectURL: () => {},
+    async fetch(url, init = {}) {
+      const parsed = new URL(url, 'http://127.0.0.1')
+      const record = { path: parsed.pathname, session: parsed.searchParams.get('session'), method: undefined, status: 0 }
+      host.requests.push(record)
+      const json = (status, body) => {
+        record.status = status
+        return { ok: status < 400, status, json: async () => body, blob: async () => ({ size: 0 }) }
+      }
+      if (parsed.pathname.endsWith('/boot')) {
+        return json(200, { ok: true, value: { token: host.token, base: '/dsh-wayland', live: host.live, sessions: host.sessions, toolchain: host.toolchain } })
+      }
+      if (parsed.pathname.endsWith('/api')) {
+        const payload = JSON.parse(init.body ?? '{}')
+        record.method = payload.method
+        if (payload.method === 'sessions.list') return json(200, { ok: true, value: { sessions: host.sessions } })
+        return json(200, { ok: true, value: {} })
+      }
+      if (parsed.pathname.endsWith('/frame')) {
+        if (!host.frames.has(record.session)) {
+          /* Older Host halves answered this with 400 and prose; `legacyStatus400`
+             models a panel that is newer than the Host half it talks to. */
+          return host.legacyStatus400
+            ? json(400, { error: `unknown wayland session "${record.session}"` })
+            : json(404, { error: `unknown wayland session "${record.session}"`, code: 'unknown_session' })
+        }
+        record.status = 200
+        return { ok: true, status: 200, json: async () => ({}), blob: async () => ({ size: 2048 }) }
+      }
+      return json(404, { error: 'not found' })
+    },
+  }
+  return host
+}
+
 /** Locale stub with the runtime's shape: register/bind/subscribe, including the
  *  real registry's rule that a namespace+locale may be registered only once. */
 function makeLocale() {
@@ -106,16 +279,19 @@ function makeLocale() {
   }
 }
 
-/** Load the client module the way the browser does and return its plugin object. */
-function loadClient() {
+/** Load the client module the way the browser does and return its plugin object.
+ *  `react` swaps the hook implementation and `globals` adds browser globals —
+ *  the live section needs effects, timers, `fetch`, `URL` and `AbortController`. */
+function loadClient({ react = makeReact(), globals = {} } = {}) {
   const source = readFileSync(CLIENT, 'utf8')
-  const mini = makeReact()
+  const mini = react
   const storage = { value: null }
   let registration = null
   const sandbox = {
     console,
     window: { __ModuleLoader__: { load: (value) => { registration = value } } },
     localStorage: { getItem: () => storage.value, setItem: (key, value) => { storage.value = value } },
+    ...globals,
   }
   sandbox.globalThis = sandbox
   runInContext(source, createContext(sandbox), { filename: CLIENT })
@@ -127,7 +303,7 @@ function loadClient() {
   check(plugin?.inject?.includes('slots'), 'the client half must inject the slots service')
   /* The client module reads its boot facts from *its own* global, so the test
      must inject them there rather than into the probe's global. */
-  return { plugin, mini, storage, boot: (value) => { sandbox.__DSH_WAYLAND__ = value } }
+  return { plugin, mini, storage, sandbox, boot: (value) => { sandbox.__DSH_WAYLAND__ = value } }
 }
 
 /** Collect every string and every element, each element with its ancestor chain. */
@@ -150,8 +326,8 @@ function walk(node, out = { strings: [], elements: [], entries: [] }, ancestors 
  * previous instance's dictionary is still in the registry — the locale service
  * rejects the duplicate, and that must not cost the panel.
  */
-function mount({ localeAtApply = true, serviceAtApply = true, preRegistered = false, registerThrows = false } = {}) {
-  const { plugin, mini, boot, storage } = loadClient()
+function mount({ localeAtApply = true, serviceAtApply = true, preRegistered = false, registerThrows = false, react, globals } = {}) {
+  const { plugin, mini, boot, storage, sandbox } = loadClient({ react, globals })
   const locale = makeLocale()
   const injections = []
   let tabType = null
@@ -202,6 +378,8 @@ function mount({ localeAtApply = true, serviceAtApply = true, preRegistered = fa
     locale,
     injections,
     storage,
+    sandbox,
+    react: mini,
     get tabType() { return tabType },
     get Panel() { return Panel },
     get applyError() { return applyError },
@@ -399,6 +577,157 @@ for (const language of ['en', 'zh']) {
   check(typeof late.Panel === 'function', 'the tab body must register once the registry appears')
   check(late.applyError === null, `asking for the registry must not fail the entry: ${late.applyError?.message}`)
   console.log('--- late tab registry: registration waits for it instead of giving up')
+}
+
+/* ------------- the reported bug: a closed session must not be polled forever */
+{
+  /** Mount the panel against `host` and hand back the pieces a lifecycle test needs. */
+  const drive = (host, clock) => {
+    const live = mount({
+      react: makeLiveReact(),
+      globals: {
+        fetch: (url, init) => host.fetch(url, init),
+        AbortController,
+        URL: Object.assign(function URL() {}, {
+          createObjectURL: () => host.createObjectURL(),
+          revokeObjectURL: (url) => host.revokeObjectURL(url),
+        }),
+        performance: { now: () => clock.now() },
+        setTimeout: clock.setTimeout,
+        clearTimeout: clock.clearTimeout,
+        setInterval: clock.setInterval,
+        clearInterval: clock.clearInterval,
+      },
+    })
+    const props = { useTabInfo: () => ({ tab: { id: 'check', visible: true } }) }
+    let tree = null
+    const renderOnce = () => { live.react.beginRender(); tree = live.Panel(props) }
+    const settle = async () => {
+      for (let guard = 0; guard < 500; guard++) {
+        const effects = live.react.flushEffects()
+        await settleMicrotasks()
+        const dirty = live.react.takeDirty()
+        if (dirty) renderOnce()
+        else if (effects === 0) return
+      }
+    }
+    const shownImage = () => walk(tree).elements.find((element) => element.type === 'img')
+    return {
+      host,
+      clock,
+      settle,
+      shownImage,
+      frameRequests: () => host.requests.filter((entry) => entry.path.endsWith('/frame')),
+      apiCalls: () => host.requests.filter((entry) => entry.path.endsWith('/api')),
+      strings: () => walk(tree).strings,
+      elements: () => walk(tree).elements,
+      en: live.locale.entries('dsh-wayland')?.en ?? {},
+      /** Render, let the boot/token/list traffic settle, and pull a first frame. */
+      async start() {
+        renderOnce()
+        await settle()
+        await clock.advance(200)
+        await settle()
+      },
+    }
+  }
+
+  /** One session, one picture, then the session disappears and `gone` says how. */
+  const lifecycle = async (gone) => {
+    const clock = makeClock()
+    const host = makeFakeHost()
+    host.sessions = [{ id: 'w1', name: 'one', width: 1280, height: 800 }]
+    host.frames.add('w1')
+    const panel = drive(host, clock)
+    await panel.start()
+    check(Boolean(panel.shownImage()?.props?.src), 'a live session must show the frame it was sent')
+    check(panel.frameRequests().some((entry) => entry.status === 200 && entry.session === 'w1'),
+      `the panel must ask for the selected session's frames, saw ${JSON.stringify(panel.frameRequests())}`)
+    /* Two frames inside one millisecond must not turn into "Infinity fps". */
+    check(!panel.strings().some((text) => /Infinity|NaN/.test(text)),
+      `the HUD must never print a non-finite frame rate, saw ${JSON.stringify(panel.strings())}`)
+
+    const before = panel.frameRequests().length
+    host.sessions = []
+    host.frames.delete('w1')
+    gone(host)
+    await clock.advance(200)
+    await panel.settle()
+    await clock.advance(3000)
+    await panel.settle()
+    const afterClose = panel.frameRequests().slice(before)
+    check(!panel.shownImage(), 'the last picture must be dropped when its session goes away')
+    check(!panel.strings().some((text) => /frame request failed/.test(text)),
+      'a dead session is not a frame error to keep showing')
+    check(panel.apiCalls().some((entry) => entry.method === 'sessions.list' && host.requests.indexOf(entry) > before),
+      'the failed frame must lead to a session-list refresh instead of waiting for the poll')
+    const start = panel.en['empty.start']
+    check(Boolean(start) && panel.elements().some((element) => element.type === 'button' && String(element.props?.children) === start),
+      `the panel must fall back to the "no sessions" screen, saw ${JSON.stringify(panel.strings())}`)
+    return afterClose
+  }
+
+  /* The Host tells the panel the session is gone: one 404, then silence. */
+  const after404 = await lifecycle(() => {})
+  check(after404.length === 1,
+    `the panel must stop after the first 404 from a dead session, saw ${after404.length} more frame request(s)`)
+  check(after404[0]?.status === 404 && after404[0]?.session === 'w1',
+    `that request must be the 404 for the dead session, saw ${JSON.stringify(after404[0])}`)
+  console.log(`--- closed session (404 from the Host): picture dropped, list refreshed, polling stopped (${after404.length} frame request)`)
+
+  /* A panel can be newer than the Host half it talks to, and older Host halves
+     answered "no such session" with 400. The panel still has to recover. */
+  const after400 = await lifecycle((host) => { host.legacyStatus400 = true })
+  check(after400.length > 0 && after400.length <= 4,
+    `an older Host's 400 must end in a bounded number of retries, saw ${after400.length}`)
+  console.log(`--- closed session (400 from an older Host): recovered after ${after400.length} frame requests`)
+
+  /* The Host's own contract, on the real handler: the panel acts on this status. */
+  const { apply: applyHost } = await import(join(HERE, '..', 'plugin', 'host.js'))
+  const root = mkdtempSync(join(HERE, '.tmp-panel-http-'))
+  let handler = null
+  const hostTools = []
+  const hostCtx = {
+    tools: { register: (definition) => { hostTools.push(definition); return () => {} } },
+    webServer: { tapIndex: () => () => {}, register: (route) => { handler = route.handler; return () => {} } },
+    effect: (callback) => { callback?.(); return () => {} },
+    get: () => undefined,
+    on: () => () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  }
+  delete globalThis[Symbol.for('dsh-wayland.host.applied')]
+  applyHost(hostCtx, { binDir: join(root, 'no-binaries'), sessionRoot: root })
+  const request = async (path, token) => {
+    let status = 0
+    let body = ''
+    const req = { method: 'GET', url: path, headers: token === undefined ? {} : { 'x-dsh-wayland-token': token } }
+    const res = {
+      writeHead: (code) => { status = code },
+      setHeader: () => {},
+      end: (chunk) => { if (chunk !== undefined) body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk) },
+    }
+    await handler(req, res)
+    return { status, body: body ? JSON.parse(body) : undefined }
+  }
+  const booted = await request('/dsh-wayland/boot')
+  const token = booted.body?.value?.token
+  check(typeof token === 'string' && token.length > 0, 'the boot route must hand out a token')
+  const gone = await request('/dsh-wayland/frame?session=w-none', token)
+  check(gone.status === 404, `a frame request for a session that is gone must be 404, saw ${gone.status}`)
+  check(gone.body?.code === 'unknown_session', `it must carry code "unknown_session", saw ${JSON.stringify(gone.body)}`)
+  const forbidden = await request('/dsh-wayland/frame?session=w-none', 'wrong-token')
+  check(forbidden.status === 403, `a bad token must still be 403, saw ${forbidden.status}`)
+  const endpoint = await request('/dsh-wayland/nope', token)
+  check(endpoint.status === 404 && endpoint.body?.code === undefined,
+    `an unknown endpoint is a plain 404, saw ${endpoint.status} ${JSON.stringify(endpoint.body)}`)
+  /* The tool error still reads as a sentence for the model. */
+  const missing = await Promise.resolve()
+    .then(() => hostTools.find((tool) => tool.name === 'wayland_windows').execute({ session: 'w-none' }))
+    .then(() => null, (error) => error)
+  check(/unknown wayland session/.test(String(missing?.message)),
+    `the tool error must stay prose, saw ${String(missing?.message).slice(0, 80)}`)
+  rmSync(root, { recursive: true, force: true })
+  console.log('--- host contract: 404 + unknown_session for a dead session, 403 for a bad token')
 }
 
 /* ------------- a registration that throws must not fail the client entry */

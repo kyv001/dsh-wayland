@@ -353,7 +353,18 @@ window.__ModuleLoader__.load({
       }, [refresh, token])
 
       React.useEffect(() => {
-        if (sessions.length === 0) return
+        if (sessions.length === 0) {
+          /* The last session is gone: forget it and drop its last picture. Keeping
+             the id alive would keep the frame loop polling a dead session, and the
+             Host answers that with 404 forever while the old frame stays on screen. */
+          if (selected) {
+            setSelected('')
+            setFrame({ url: '', fps: 0, ms: 0, at: 0, bytes: 0 })
+            /* Any error the panel is showing was about that session. */
+            setError('')
+          }
+          return
+        }
         const known = sessions.some((s) => s.id === selected)
         const next = known ? selected : sessions[sessions.length - 1].id
         if (!known) {
@@ -375,6 +386,9 @@ window.__ModuleLoader__.load({
         let stopped = false
         let lastAt = 0
         let fps = 0
+        /* -Infinity, not 0: the first failure must nudge immediately, and the
+           panel's clock is not the page's uptime. */
+        let lastNudge = -Infinity
 
         const loop = async () => {
           while (!stopped) {
@@ -383,19 +397,44 @@ window.__ModuleLoader__.load({
               + `&scale=${profile.scale}&quality=${profile.quality}&t=${Date.now()}`
             try {
               const res = await request(url, { signal: controller.signal })
-              if (!res.ok) throw new Error(translate('error.frame', { status: res.status }))
+              if (!res.ok) {
+                const failure = new Error(translate('error.frame', { status: res.status }))
+                failure.status = res.status
+                throw failure
+              }
               const blob = await res.blob()
               if (stopped) return
               const objectUrl = URL.createObjectURL(blob)
               revokeQueue.current.push(objectUrl)
               const elapsed = performance.now() - started
               const at = Date.now()
-              if (lastAt) fps = fps === 0 ? 1000 / (at - lastAt) : fps * 0.7 + (1000 / (at - lastAt)) * 0.3
+              /* Two frames can land in the same millisecond; a delta of zero would
+                 make the smoothed rate Infinity, which the HUD would then print. */
+              const delta = at - lastAt
+              if (lastAt && delta > 0) fps = fps === 0 ? 1000 / delta : fps * 0.7 + (1000 / delta) * 0.3
               lastAt = at
               setFrame({ url: objectUrl, fps, ms: Math.round(elapsed), at, bytes: blob.size })
               setError('')
             } catch (cause) {
               if (stopped || cause?.name === 'AbortError') return
+              if (cause?.status === 404) {
+                /* The session went away under us (the Host says so with a code).
+                   Keep nothing from it: not the picture, not the error, and not the
+                   polling — re-read the list, which is what decides whether a
+                   session is shown at all. */
+                setFrame({ url: '', fps: 0, ms: 0, at: 0, bytes: 0 })
+                setError('')
+                void refresh()
+                return
+              }
+              if (cause?.status === 400 && performance.now() - lastNudge >= 1000) {
+                /* A panel can outlive the Host half it talks to, and older Host
+                   halves answered "no such session" with 400 and prose. Don't read
+                   tea leaves: ask the list, at most once a second, and let it end
+                   the loop if that session is really gone. */
+                lastNudge = performance.now()
+                void refresh()
+              }
               setError(cause.message)
               await sleep(400)
             }
@@ -408,7 +447,7 @@ window.__ModuleLoader__.load({
           stopped = true
           controller.abort()
         }
-      }, [live, selected, token, nonce])
+      }, [live, selected, token, nonce, refresh])
 
       const onFrameLoad = React.useCallback(() => {
         /* the browser has the current frame; drop every earlier blob */
