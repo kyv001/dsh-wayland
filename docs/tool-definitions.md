@@ -5,7 +5,7 @@ the live definitions, not hand-copied). Descriptions carry the purpose, when to
 use the tool, and what it returns; defaults, units and id provenance live on the
 parameters they belong to.
 
-8 tools, 9724 characters of schema in total.
+8 tools, 9920 characters of schema in total.
 
 ## `wayland_session_create`
 
@@ -39,12 +39,12 @@ Shut a virtual desktop down: every program started in it is terminated, its wind
 
 ## `wayland_launch`
 
-Run a program on a virtual desktop and return its pid plus what became of its window (`window`, `exited`, `timeout`, or `skipped` when wait was false). The program inherits that desktop's screen, clipboard and input, so it appears only there; its output goes to the session log, not this result. A GUI toolkit needs a second or two to draw, so give it a moment before screenshotting.
+Run a program on a virtual desktop and return its pid plus what became of its window (`window`, `exited`, `timeout`, or `skipped` when wait was false). The program inherits that desktop's screen, clipboard and input, so it appears only there; its output goes to the session log, not this result. For shell syntax, use the bash tool — or a terminal inside the session: `command: "foot", args: ["-e", "bash", "-c", "…"]`, whose output stays on that screen (read it with wayland_screenshot) rather than in the session log. A GUI toolkit needs a second or two to draw, so give it a moment before screenshotting.
 
 | parameter | type | required | description |
 |---|---|---|---|
 | `session` | string | yes | Session id from wayland_session_list (or the id returned by wayland_session_create). |
-| `command` | string | yes | Executable to run: a name on PATH or an absolute path, e.g. "foot", "konsole", "firefox". Run directly, without a shell, so pipes, redirection, globbing and `&&` do not work; use the bash tool for shell commands. |
+| `command` | string | yes | Executable to run: a name on PATH or an absolute path, e.g. "foot", "konsole", "firefox". Run directly, without a shell, so pipes, redirection, globbing and `&&` do not work. |
 | `args` | array of string | no | Command-line arguments; each entry becomes one argv entry, exactly as given. |
 | `env` | object | no | Extra environment variables as an object of names to values, merged over the session's own environment (values are stringified). DISPLAY comes from the session and cannot be overridden here. |
 | `cwd` | string | no | Working directory (default: the DSH process's home directory). |

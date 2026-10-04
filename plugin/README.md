@@ -190,7 +190,7 @@ The HUD reads `● 19.9 fps · 32 ms · 229 KB · 1600x1000`, switches to
 | `wayland_session_list` | live sessions: id, name, size, programs started, whether the compositor is still alive |
 | `wayland_check` | plugin health: the toolchain report (what resolved, what is missing, how to fix), whether those binaries actually run, whether the session root is writable, and one health line per live session — always succeeds |
 | `wayland_session_close` | stop the session and every program in it |
-| `wayland_launch` | start a program inside the session, returns pid + window |
+| `wayland_launch` | start a program inside the session; returns pid, an `outcome` (`window` / `exited` / `timeout` / `skipped`), the exit code when it ended, and the session log |
 | `wayland_windows` | mapped windows: id, app id, title, pid, absolute rect |
 | `wayland_screenshot` | capture output or window, returns the image |
 | `wayland_input` | ordered directives: primitives `move` / `press` / `release` / `scroll` / `wait` / `raise`, sugars `click` / `drag` / `type` / `key` |

@@ -7,8 +7,9 @@
  * pins the wording of each one without needing a compositor:
  *
  *   - the schema declares `outcome` as required with exactly four values
- *   - the "no shell" warning lives on the `command` parameter (where it belongs)
- *     instead of being repeated in the tool description
+ *   - the "no shell" rule lives on the `command` parameter (where it belongs), while
+ *     the description states the shell *route*: a terminal inside the session, with
+ *     the warning that a terminal's output stays on screen instead of the log
  *   - `env` states its shape, the merge, and the DISPLAY rule
  *   - every outcome renders a different, actionable line, and `exited` names the
  *     exit code and the log the output went to
@@ -54,10 +55,14 @@ for (const name of ['pid', 'command', 'outcome', 'log']) {
 check(tool.output?.schema?.properties?.exitCode !== undefined, 'exitCode must be part of the result')
 
 const params = tool.parameters?.properties ?? {}
-check(!/shell|pipe|redirection|globbing/i.test(tool.description),
-  'the tool description must not repeat the shell warning')
-check(/shell/i.test(params.command?.description ?? ''),
+check(!/pipes, redirection|globbing|&&/.test(tool.description),
+  'the no-shell rule belongs on the command parameter, not repeated in the description')
+check(/without a shell/i.test(params.command?.description ?? ''),
   'the command parameter must say it runs without a shell')
+check(/terminal/i.test(tool.description) && /bash/.test(tool.description),
+  'the description must state the terminal route for shell syntax')
+check(/stays on that screen|not in the session log/.test(tool.description),
+  'the terminal route must warn that its output does not reach the session log')
 check(/merged over/i.test(params.env?.description ?? '') && /DISPLAY/.test(params.env?.description ?? ''),
   'the env parameter must state the merge and the DISPLAY rule')
 check(/stringified|string/i.test(params.env?.description ?? ''),
@@ -93,4 +98,4 @@ if (failures.length > 0) {
   console.log(`launch check failed: ${failures.length} problem(s)`)
   process.exit(1)
 }
-console.log('launch check ok: four distinct outcomes, indexed result, shell rule on the command parameter')
+console.log('launch check ok: four distinct outcomes, indexed result, shell rule on the parameter and the terminal route in the description')

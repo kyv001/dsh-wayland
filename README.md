@@ -268,7 +268,7 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9724 字符 schema ≈ 2.4k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 320 字符描述 —— 净 +105 字符）。
+从代码渲染）。合计 9920 字符 schema ≈ 2.5k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 320 字符描述 —— 净 +105 字符）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
 （指针动作返回时合成器已处理）、失败方式（关一个已关闭的 id 会报错；非法载荷在发出任何事件前
 就被拒掉，并点名第几条、哪个字段）都写在模型要读的那段里；实现支持但 schema 没声明的旋钮不留
@@ -440,9 +440,14 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
 - 再修 `wayland_launch` 的结果：原来"没有窗口"把三种情况混成一句话（进程挂了 / 还在画 / 根本没等），
   现在回一个 `outcome`（`window` / `exited` / `timeout` / `skipped`）+ 已知的 `exitCode` + 会话日志路径，
   渲染也分情况说话（exited 点出退出码并指向日志、timeout 明说进程还在跑并提示稍后看 `wayland_windows`）；
-  "不经过 shell" 从工具描述挪到 `command` 参数（描述里不再复述），`env` 写清形状（名字→值、值会被
-  字符串化、合并覆盖在会话环境之上、`DISPLAY` 由会话决定不可覆盖）。新增 `.probe/check-launch.mjs`
-  把四种 outcome 的措辞与字段钉死（已反证：改掉 exited 的措辞 → exit=1）。schema 9749 → 9724。
+  "不经过 shell" 从工具描述挪到 `command` 参数（描述里只留"要用 shell 该怎么办"），`env` 写清形状
+  （名字→值、值会被字符串化、合并覆盖在会话环境之上、`DISPLAY` 由会话决定不可覆盖）。新增
+  `.probe/check-launch.mjs` 把四种 outcome 的措辞与字段钉死（已反证：改掉 exited 的措辞 → exit=1）。
+- 接着补上"要用 shell 语法怎么办"这条路：描述里给出**会话内终端**的做法
+  （`command: "foot", args: ["-e", "bash", "-c", "…"]`），并实测确认了它的边界——`echo hi | tr a-z A-Z`
+  确实在会话里跑出了 `HI-FROM-SHELL`、用户能在右栏看到，但**终端把输出渲染在 PTY 屏幕上，`apps.log`
+  里只有 foot 自己的一行 warning（83 B）**，所以要文本仍应走 bash 工具（或让 shell 自己重定向到文件）。
+  这条实测边界写进了描述，免得模型以为能去日志里读终端输出。schema 9724 → 9920。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；
