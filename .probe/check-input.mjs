@@ -16,6 +16,10 @@
  *     for the pre-redesign `{type: ...}` shape
  *   - a well-formed payload is not rejected as a payload error
  *
+ * Failure *state* is pinned by what the error says, not by prose in the tool
+ * description: a rejection names the action index, the directive and the field,
+ * and a mid-run failure reports how many earlier directives were applied.
+ *
  * Run: node .probe/check-input.mjs
  */
 import { dshToolsPath } from './dsh-tools.mjs'
@@ -87,7 +91,6 @@ for (const variant of variants) {
 }
 check(schema.properties.actions.description.includes('finishes before'), 'the actions field must state the ordering')
 check(schema.properties.window !== undefined, 'the tool must expose the optional keyboard target window')
-check(/validated before/.test(tool.description), 'the description must state that validation happens before anything is sent')
 assertSupportedJsonSchema(tool.parameters, 'wayland_input parameters')
 
 /* ------------------------------------------------- rejection behaviour */

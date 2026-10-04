@@ -268,10 +268,11 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9598 字符 schema ≈ 2.4k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低）。
+从代码渲染）。合计 9382 字符 schema ≈ 2.3k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
-（指针动作返回时合成器已处理）、失败方式（关一个已关闭的 id 会报错；非法载荷在发出任何事件前
-就被拒掉，并点名第几条、哪个字段）都写在模型要读的那段里；实现支持但 schema 没声明的旋钮不留
+（指针动作返回时合成器已处理）都写在模型要读的那段里；**失败方式不写进描述，由报错本身说**
+（关一个已关闭的 id 会报错；非法载荷在发出任何事件前就被拒掉，报错点名第几条、哪个字段；
+跑一半失败则回报已应用了几条）；实现支持但 schema 没声明的旋钮不留
 （曾经的 `delayMs`/`waitMs` 要么声明要么删掉；截图格式/质量、键盘前导与逐键间隔统统下沉到部署配置）。
 
 `wayland_input` 的形状是**一张表驱动两处**：`host.js` 里的 `DIRECTIVES` 同时生成模型看到的
@@ -455,6 +456,18 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   同一事实的第二遍，删掉；`"foot"/"konsole"/"firefox"` 这类"怎么写程序名"的示例也删。schema 9920 → 9598
   （比拆分诊断前的 9644 还低）。`.probe/check-launch.mjs` 的断言改成钉新口径：shell 这件事只在描述里说
   一次（路由 + 终端输出不进日志），`command` 参数里再出现规则或 `e.g.` 示例即失败。
+- 最后删掉 `wayland_input` 描述里那句 `The whole list is validated before anything is sent: a rejected call
+  names the action and field to fix and leaves the session untouched, and a directive that fails mid-run reports
+  how many earlier ones were applied.`：前半句（`validated before anything is sent`）是**实现机制**，
+  后半句的报错格式（点名第几条/哪个字段）模型读报错就知道了——**这两件事实都出现在报错里，描述里再说一遍就是第二次**：
+  校验失败抛 `action 2 (click): …`（什么都没发出去），跑一半失败抛
+  `wayland_input: action 3 (click) failed: … (2 earlier action(s) were applied)`（已应用几条）。
+  后者实测过：`[move, wait 9000, move]` 在 `wait` 中途 `pkill` 掉合成器，真调一次拿回
+  `Error: wayland_input: action 2 (move) failed: wayland socket closed (2 earlier action(s) were applied)`
+  ——`applied` 数（含 `wait`）与实际发生的事一致。
+  `.probe/check-input.mjs` 相应去掉"描述里必须出现 `validated before`"这条**散文断言**——失败语义改由
+  行为断言钉（每条拒绝都带 action 序号/指令/字段，合法载荷必须越过校验），脚本注释里写明这个分工。
+  schema 9598 → 9382。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；

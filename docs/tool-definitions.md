@@ -5,7 +5,7 @@ the live definitions, not hand-copied). Descriptions carry the purpose, when to
 use the tool, and what it returns; defaults, units and id provenance live on the
 parameters they belong to.
 
-8 tools, 9598 characters of schema in total.
+8 tools, 9382 characters of schema in total.
 
 ## `wayland_session_create`
 
@@ -71,7 +71,7 @@ Capture what a virtual desktop looks like and return it as an image you can see,
 
 ## `wayland_input`
 
-Send input to a virtual desktop as an ordered list of directives; each entry is exactly one of ten — move, press, release, scroll, wait, raise, click, drag, type, key. Key and text events go to the focused window, so pass window to raise and focus one first; pointer events go to whatever is under the cursor. The whole list is validated before anything is sent: a rejected call names the action and field to fix and leaves the session untouched, and a directive that fails mid-run reports how many earlier ones were applied. Directives run strictly in order, and pointer ones return once the compositor has applied them, so a screenshot straight after reflects them. press/release hold a mouse button across calls (long press, drag); a key is always pressed and released within its own directive.
+Send input to a virtual desktop as an ordered list of directives; each entry is exactly one of ten — move, press, release, scroll, wait, raise, click, drag, type, key. Key and text events go to the focused window, so pass window to raise and focus one first; pointer events go to whatever is under the cursor. Directives run strictly in order, and pointer ones return once the compositor has applied them, so a screenshot straight after reflects them. press/release hold a mouse button across calls (long press, drag); a key is always pressed and released within its own directive.
 
 | parameter | type | required | description |
 |---|---|---|---|
