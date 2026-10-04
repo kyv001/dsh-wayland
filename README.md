@@ -266,7 +266,7 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9801 字符 schema ≈ 2.5k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 370 字符描述 —— 净 +157 字符）。
+从代码渲染）。合计 9749 字符 schema ≈ 2.4k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 320 字符描述 —— 净 +105 字符）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
 （指针动作返回时合成器已处理）、失败方式（关一个已关闭的 id 会报错；非法载荷在发出任何事件前
 就被拒掉，并点名第几条、哪个字段）都写在模型要读的那段里；实现支持但 schema 没声明的旋钮不留
@@ -434,7 +434,7 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   `zwlr_virtual_pointer_manager_v1`——用**只读探测**，绝不建临时设备：临时设备正是 §3.3 里丢 click 的
   根因）。`.probe/check-degraded.mjs` 跟着改为校验 `wayland_check` 的形状，并断言"什么都没解析出来时
   不许报 ok"；`.probe/check-pointer.mjs` 增加只读探测的三条断言（有协议/无协议/连不上，且都不建设备）。
-  schema 9644 → 9801 字符（新工具自己的描述约 370 字符）。
+  schema 9644 → 9749 字符（新工具自己的描述约 320 字符）。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；

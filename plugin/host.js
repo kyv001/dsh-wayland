@@ -1511,7 +1511,7 @@ function registerTools(ctx, manager, cfg) {
      a failing tool simply prints this report's text as its error. */
   ctx.tools.register({
     name: 'wayland_check',
-    description: 'Check this plugin\'s health: the toolchain (what resolved and how, what is missing, what each binary is for, how to install it), whether those binaries actually run, whether the session root is writable, and a health line per live session. Call it when another wayland_* tool reports missing dependencies, or when a session misbehaves. Always succeeds and changes nothing.',
+    description: 'Check this plugin\'s health: the toolchain, whether those binaries actually run, whether the session root is writable, and a health line per live session. Run it once before you start using the wayland_* tools, and again when one reports missing dependencies or a session misbehaves. Always succeeds and changes nothing.',
     parameters: json({ properties: {} }),
     output: {
       schema: out({
