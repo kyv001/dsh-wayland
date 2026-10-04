@@ -681,17 +681,34 @@ function createManager(ctx, cfg) {
     const record = { pid: child.pid, command: [command, ...args].join(' '), startedAt: new Date().toISOString() }
     session.apps.push(record)
     let window = null
+    /* Which of three things happened while waiting. "No window" alone cannot tell
+       a program that died from one that is merely slow, and the caller has to act
+       differently on each. */
+    let outcome = wait ? 'timeout' : 'skipped'
     if (wait) {
       const deadline = Date.now() + waitMs
       while (Date.now() < deadline) {
         await sleep(250)
         const found = await windows(session.id).catch(() => [])
         window = found.find((w) => w.pid === child.pid && w.visible) ?? null
-        if (window) break
-        if (child.exitCode !== null) break
+        if (window) {
+          outcome = 'window'
+          break
+        }
+        if (child.exitCode !== null) {
+          outcome = 'exited'
+          break
+        }
       }
     }
-    return { pid: child.pid, command: record.command, window }
+    return {
+      pid: child.pid,
+      command: record.command,
+      outcome,
+      log: path.join(session.dir, 'apps.log'),
+      ...(window ? { window } : {}),
+      ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}),
+    }
   }
 
   /* ------------------------------------------------------------ pictures */
@@ -1583,13 +1600,13 @@ function registerTools(ctx, manager, cfg) {
 
   ctx.tools.register({
     name: 'wayland_launch',
-    description: 'Run a program on a virtual desktop and return its pid. No shell is involved — command and args are executed literally, so pipes, redirection, globbing and `&&` do not work; use the bash tool for shell commands. The program inherits that desktop\'s screen, clipboard and input, so it appears only there, and its output goes to a log file in the session directory, not this result. With wait (the default) the call also polls, up to waitMs, for a window owned by that pid and returns its id; no window, an immediate exit, or a slower draw returns without one. A GUI toolkit needs a second or two to draw, so wait before screenshotting.',
+    description: 'Run a program on a virtual desktop and return its pid plus what became of its window (`window`, `exited`, `timeout`, or `skipped` when wait was false). The program inherits that desktop\'s screen, clipboard and input, so it appears only there; its output goes to the session log, not this result. A GUI toolkit needs a second or two to draw, so give it a moment before screenshotting.',
     parameters: json({
       properties: {
         session: { ...sessionParam, required: true },
-        command: { type: 'string', required: true, description: 'Executable to run: a name on PATH or an absolute path, e.g. "foot", "konsole", "firefox".' },
-        args: { type: 'array', items: { type: 'string' }, description: 'Command-line arguments; each entry becomes one argument, exactly as given.' },
-        env: { type: 'object', description: 'Extra environment variables for the program, merged over the session\'s own (string values).' },
+        command: { type: 'string', required: true, description: 'Executable to run: a name on PATH or an absolute path, e.g. "foot", "konsole", "firefox". Run directly, without a shell, so pipes, redirection, globbing and `&&` do not work; use the bash tool for shell commands.' },
+        args: { type: 'array', items: { type: 'string' }, description: 'Command-line arguments; each entry becomes one argv entry, exactly as given.' },
+        env: { type: 'object', description: 'Extra environment variables as an object of names to values, merged over the session\'s own environment (values are stringified). DISPLAY comes from the session and cannot be overridden here.' },
         cwd: { type: 'string', description: 'Working directory (default: the DSH process\'s home directory).' },
         wait: { type: 'boolean', description: 'Wait for a window before returning, up to waitMs (default true). Set false for programs that open no window.' },
         waitMs: { type: 'integer', description: 'How long to wait for that window, in milliseconds (default 8000; the call blocks meanwhile). Ignored when wait is false.' },
@@ -1601,6 +1618,9 @@ function registerTools(ctx, manager, cfg) {
         properties: {
           pid: { type: 'integer', required: true },
           command: { type: 'string', required: true },
+          outcome: { type: 'string', required: true, enum: ['window', 'exited', 'timeout', 'skipped'], description: 'window: a window for that pid mapped within waitMs. exited: the program ended first; exitCode says how. timeout: still running with no window yet, so check wayland_windows later. skipped: wait was false, so nothing was awaited.' },
+          exitCode: { type: 'integer', description: 'Exit status, present once the program has ended.' },
+          log: { type: 'string', required: true, description: 'Session log every launched program appends its output to.' },
           window: {
             type: 'object',
             additionalProperties: false,
@@ -1614,7 +1634,13 @@ function registerTools(ctx, manager, cfg) {
       }),
       render: (args, value) => toolText(
         `Launched ${value.command} in ${args.session} (pid ${value.pid})`,
-        value.window ? [`window ${value.window.id} "${value.window.title}" (${value.window.appId})`] : ['no window appeared yet'],
+        value.outcome === 'window'
+          ? [`window ${value.window.id} "${value.window.title}" (${value.window.appId})`]
+          : value.outcome === 'exited'
+            ? [`the program exited${value.exitCode === undefined ? '' : ` with code ${value.exitCode}`} before a window appeared`, `its output is in ${value.log}`]
+            : value.outcome === 'timeout'
+              ? ['no window yet and the program is still running; wayland_windows will list it once it maps']
+              : ['wait was false, so no window was awaited'],
       ),
     },
     presentCall: (args) => ({ card: 'terminal', title: `Launch ${args.command}`, description: `in ${args.session}`, kind: 'execute', rawInput: args }),
@@ -1623,6 +1649,9 @@ function registerTools(ctx, manager, cfg) {
       return {
         pid: launched.pid,
         command: launched.command,
+        outcome: launched.outcome,
+        log: launched.log,
+        ...(launched.exitCode === undefined ? {} : { exitCode: launched.exitCode }),
         ...(launched.window ? { window: { id: launched.window.id, appId: launched.window.appId, title: launched.window.title } } : {}),
       }
     },

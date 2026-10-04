@@ -51,7 +51,9 @@ docs/
   check-identity.mjs    离线校验：包名 / client.js 注册 id / patch 行名三处一致，且包可发布
   check-degraded.mjs    离线校验：工具链全缺 / 部分缺 / 齐全三种情况下的降级与报告，以及 `wayland_check` 的自检形状（含"什么都没解析出来时不许报 ok"）
   check-panel.mjs       离线校验：用迷你 React 把面板组件树渲染出来，断言中英双语与字典键齐平、**悬停说明可达**、**跟随宿主字号**、locale 迟挂载、字典被拒/注册抛错都不致命、无 Live/Crisp；`DSH_WAYLAND_CLIENT=<file>` 可改测服务端实际提供的那份字节
-  check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手、报文与**只读能力探测**（不建设备）——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
+  check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手、报文与**只读能力探测**（不建设备）
+  check-input.mjs       离线校验：`wayland_input` 的 10 个变体（required/properties 逐条钉死）与 9 条报错文案，并断言"校验先于会话查找"
+  check-launch.mjs      离线校验：`wayland_launch` 的结果契约——四种 outcome 必须渲染成四句不同的话（exited 点名退出码与日志、timeout 说明进程还在跑），"没有 shell" 只写在 `command` 参数上——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
   render-tools.mjs      重新渲染 docs/tool-definitions.md
 ```
 
@@ -266,7 +268,7 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9749 字符 schema ≈ 2.4k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 320 字符描述 —— 净 +105 字符）。
+从代码渲染）。合计 9724 字符 schema ≈ 2.4k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 320 字符描述 —— 净 +105 字符）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
 （指针动作返回时合成器已处理）、失败方式（关一个已关闭的 id 会报错；非法载荷在发出任何事件前
 就被拒掉，并点名第几条、哪个字段）都写在模型要读的那段里；实现支持但 schema 没声明的旋钮不留
@@ -435,6 +437,12 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   根因）。`.probe/check-degraded.mjs` 跟着改为校验 `wayland_check` 的形状，并断言"什么都没解析出来时
   不许报 ok"；`.probe/check-pointer.mjs` 增加只读探测的三条断言（有协议/无协议/连不上，且都不建设备）。
   schema 9644 → 9749 字符（新工具自己的描述约 320 字符）。
+- 再修 `wayland_launch` 的结果：原来"没有窗口"把三种情况混成一句话（进程挂了 / 还在画 / 根本没等），
+  现在回一个 `outcome`（`window` / `exited` / `timeout` / `skipped`）+ 已知的 `exitCode` + 会话日志路径，
+  渲染也分情况说话（exited 点出退出码并指向日志、timeout 明说进程还在跑并提示稍后看 `wayland_windows`）；
+  "不经过 shell" 从工具描述挪到 `command` 参数（描述里不再复述），`env` 写清形状（名字→值、值会被
+  字符串化、合并覆盖在会话环境之上、`DISPLAY` 由会话决定不可覆盖）。新增 `.probe/check-launch.mjs`
+  把四种 outcome 的措辞与字段钉死（已反证：改掉 exited 的措辞 → exit=1）。schema 9749 → 9724。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；
@@ -589,7 +597,9 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
 2. 跑离线校验：`.probe/check-plugin.mjs`（工具 schema 改动必跑）、`.probe/check-identity.mjs`
    （改包名/`client.js` 的 id/patch 行名必跑）、`.probe/check-degraded.mjs`（改依赖表、
    探测逻辑或降级文案必跑）、`.probe/check-panel.mjs`（改面板 UI/文案/控件必跑）、
-   `.probe/check-pointer.mjs`（改 `pointer.js` 或指针注入路径必跑）。
+   `.probe/check-pointer.mjs`（改 `pointer.js` 或指针注入路径必跑）、`.probe/check-input.mjs`
+   （改 `wayland_input` 的指令表/校验必跑）、`.probe/check-launch.mjs`（改 `wayland_launch` 的
+   结果字段或渲染必跑）。
 3. （只有开发这个插件时才做）在 profile 里加开发行并**换 id + 换 `?v=N`**，同时确认 bundle 行是
    `disabled: true`（否则开发行会被挡住，见 §3.5）。普通用户跳过这一步。
 4. 重载会杀掉所有会话 → 重新建会话；若只改了 `client.js`，**重挂一次插件行再刷新页面**
