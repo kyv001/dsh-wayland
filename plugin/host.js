@@ -650,6 +650,10 @@ function createManager(ctx, cfg) {
       proc: null,
       apps: [],
       pointer: { x: 0, y: 0 },
+      /* How often this session has been *told* where the pointer goes. Only such
+         a call can report a position: the compositor cannot be asked where the
+         cursor actually is (README §10). */
+      pointerSets: 0,
       /* One persistent virtual pointer per session, opened on first use. */
       vptr: null,
       vptrTried: false,
@@ -1061,23 +1065,48 @@ function createManager(ctx, cfg) {
     }
   }
 
+  /**
+   * Park the pointer on the layout's top-left corner.
+   *
+   * `wlrctl` moves are relative, so they need a starting point the plugin can
+   * trust; its own record is the only candidate, and that record goes stale the
+   * moment anything else moves the cursor — no compositor API will read the
+   * cursor position back (see README §10). A move of one full screen in each
+   * negative direction rebuilds it: the compositor constrains the pointer to the
+   * layout, so wherever it really was, it lands on the corner. Sessions here have
+   * a single output at (0,0), which is what makes that corner (0,0).
+   */
+  async function homeCursor(session) {
+    await runOnce(requireBin('wlrctl', 'Cannot move the pointer'), ['pointer', 'move', String(-session.width), String(-session.height)], {
+      env: envFor(session), timeoutMs: 10000, label: 'wlrctl pointer home',
+    })
+    session.pointer = { x: 0, y: 0 }
+  }
+
+  /**
+   * Put the pointer at an absolute session coordinate.
+   * @returns the position that was actually asserted, so a caller can report it
+   *   without asking the compositor (which cannot answer).
+   */
   async function pointerMove(session, x, y) {
     const vptr = await virtualPointer(session)
     if (vptr) {
       session.pointer = await vptr.move(x, y)
-      return
-    }
-    if (await warpCursor(session, x, y)) {
+    } else if (await warpCursor(session, x, y)) {
       session.pointer = { x: Math.round(x), y: Math.round(y) }
-      return
+    } else {
+      await homeCursor(session)
+      const dx = Math.round(x) - session.pointer.x
+      const dy = Math.round(y) - session.pointer.y
+      if (dx !== 0 || dy !== 0) {
+        await runOnce(requireBin('wlrctl', 'Cannot move the pointer'), ['pointer', 'move', String(dx), String(dy)], {
+          env: envFor(session), timeoutMs: 10000, label: 'wlrctl pointer move',
+        })
+      }
+      session.pointer = { x: Math.round(x), y: Math.round(y) }
     }
-    const dx = Math.round(x) - session.pointer.x
-    const dy = Math.round(y) - session.pointer.y
-    if (dx === 0 && dy === 0) return
-    await runOnce(requireBin('wlrctl', 'Cannot move the pointer'), ['pointer', 'move', String(dx), String(dy)], {
-      env: envFor(session), timeoutMs: 10000, label: 'wlrctl pointer move',
-    })
-    session.pointer = { x: Math.round(x), y: Math.round(y) }
+    session.pointerSets += 1
+    return { ...session.pointer }
   }
 
   async function pointerClick(session, button) {
@@ -1258,14 +1287,17 @@ function createManager(ctx, cfg) {
         times: field.count('How many clicks in a row, 1-20 (default 1)', false, 1),
       },
       async run(session, d) {
-        if (d.at) await pointerMove(session, d.at[0], d.at[1])
+        /* No `at` means "wherever the cursor already is". That position cannot be
+           read back from the compositor, so it is not reported: the position this
+           plugin last set would be a guess about the present (README §10). */
+        const at = d.at ? await pointerMove(session, d.at[0], d.at[1]) : null
         for (let i = 0; i < d.times; i++) {
           /* keep repeats inside the double-click window so times > 1 is a
              multi-click, not two unrelated clicks */
           if (i > 0) await sleep(40)
           await pointerClick(session, d.button)
         }
-        return { click: { at: [session.pointer.x, session.pointer.y], button: d.button, times: d.times } }
+        return { click: { ...(at === null ? {} : { at: [at.x, at.y] }), button: d.button, times: d.times } }
       },
     },
     drag: {
@@ -1275,8 +1307,9 @@ function createManager(ctx, cfg) {
         button: field.button('Which button to drag with (default left)', false, 'left'),
       },
       async run(session, d) {
-        if (d.from) await pointerMove(session, d.from[0], d.from[1])
-        const from = [session.pointer.x, session.pointer.y]
+        /* Same rule as `click`: a drag that starts where the cursor happens to be
+           has no start this plugin can state. */
+        const from = d.from ? await pointerMove(session, d.from[0], d.from[1]) : null
         await pointerPress(session, d.button)
         try {
           await pointerMove(session, d.to[0], d.to[1])
@@ -1284,7 +1317,7 @@ function createManager(ctx, cfg) {
           /* never leave a button held, even when the move failed */
           await pointerRelease(session, d.button).catch(() => {})
         }
-        return { drag: { from, to: d.to, button: d.button } }
+        return { drag: { ...(from === null ? {} : { from: [from.x, from.y] }), to: d.to, button: d.button } }
       },
     },
     type: {
@@ -1366,6 +1399,7 @@ function createManager(ctx, cfg) {
       target = options.window
     }
     const session = require(id)
+    const pointerSetsBefore = session.pointerSets
     if (target !== null) await requireWindow(session, target)
     for (const step of plan) if (step.do === 'raise') await requireWindow(session, step.window)
 
@@ -1383,7 +1417,14 @@ function createManager(ctx, cfg) {
         throw new Error(`wayland_input: action ${index} (${step.do}) failed: ${error?.message ?? error} (${done})`)
       }
     }
-    return { session: session.id, applied, pointer: { ...session.pointer } }
+    /* A position is reportable only when this call put the pointer there itself.
+       Otherwise it would be the position last set — which an outside move makes
+       false, and this plugin has no way to notice (README §10). */
+    return {
+      session: session.id,
+      applied,
+      ...(session.pointerSets > pointerSetsBefore ? { pointer: { ...session.pointer } } : {}),
+    }
   }
 
   /* ------------------------------------------------------------- output */
@@ -2083,7 +2124,7 @@ function registerTools(ctx, manager, cfg) {
         properties: {
           session: { type: 'string', required: true },
           applied: { type: 'array', required: true, items: { type: 'object' } },
-          pointer: { type: 'object', required: true, description: 'Cursor position in session pixels after the directives.' },
+          pointer: { type: 'object', description: 'Cursor position in session pixels; present only when this call positioned the pointer itself.' },
         },
       }),
       render: (args, value) => toolText(

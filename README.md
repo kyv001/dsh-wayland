@@ -53,9 +53,11 @@ docs/
   check-degraded.mjs    离线校验：工具链全缺 / 部分缺 / 齐全三种情况下的降级与报告，以及 `wayland_check` 的自检形状（含"什么都没解析出来时不许报 ok"）
   check-panel.mjs       离线校验：用迷你 React 把面板组件树渲染出来，断言中英双语与字典键齐平、**悬停说明可达**、**跟随宿主字号**、locale 迟挂载、字典被拒/注册抛错都不致命、无 Live/Crisp；`DSH_WAYLAND_CLIENT=<file>` 可改测服务端实际提供的那份字节
   check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手、报文与**只读能力探测**（不建设备）——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
-  check-input.mjs       离线校验：`wayland_input` 的 10 个变体（required/properties 逐条钉死）与 9 条报错文案，并断言"校验先于会话查找"
+  check-input.mjs       离线校验：`wayland_input` 的 10 个变体（required/properties 逐条钉死）与 9 条报错文案，断言"校验先于会话查找"，并用一个假会话（假 sway + 假工具链）钉住回报的指针位置——只报同一调用自己断言过的坐标，`wlrctl` 相对路径必须先归位
   check-launch.mjs      离线校验：`wayland_launch` 的结果契约——四种 outcome 必须渲染成四句不同的话（exited 点名退出码与日志、timeout 说明进程还在跑），"没有 shell" 只写在 `command` 参数上；并对着**真实 `/proc` 树**钉住"哪个窗口算这次启动的"（任意深度的子进程、只有一个新窗口时才认领、已有窗口绝不认领）
   check-cursor.mjs      离线校验：光标主题——配置的主题与尺寸写进生成的 sway.conf、装不上的主题要如实报 warn（并说明会退回 sway 自带光标）、自动探测结果与配置文件必须一致、`wayland_check` 带 cursor 行、截图描述写明指针就在图里
+  check-overlay.mjs     离线校验：`overlay.js` 的 PNG 解码（10 张内嵌真实 PNG 字节：5 种滤波器 + RGB/RGBA + palette/隔行/16-bit，逐像素比对）、编码往返、3 条坏输入必须报错、`grid` 在 scale 1/2 与偏移原点下的落点、以及 3 条拒绝路径（不需要任何工具链）
+  check-screenshot.mjs  **端到端**校验：挂载真实 Host、开真 sway 会话、用真 grim 抓图，断言 `region` 的 origin/宽高、越界裁剪、`grid` 强制 PNG、标尺在像素上的真实落点、放大后 `(x-origin)×scale` 的映射，以及 4 条拒绝路径（缺工具链时如实报 skipped 而不是红）
   render-tools.mjs      重新渲染 docs/tool-definitions.md
 ```
 
@@ -765,6 +767,14 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
   icons 目录探测"第一个真的带 `cursors/left_ptr` 的主题"；一个都没有时用 wlroots 内建的 fallback
   箭头（较小，实测 10x16，本机 40 个非背景像素）。`wayland_check` 的 cursor 行会说明到底用的哪一个，
   但检验不了那个主题画出来好不好看。
+- **指针位置读不回来**：sway IPC 的 `get_seats` 只有 name/capabilities/focus/devices，没有坐标字段，
+  Wayland 也没有读全局指针的接口。所以插件手里是"我上次把它放到哪"的**记账**：自己挪的时候精确
+  （实测换两个位置，精灵位移与实际位移逐像素相等），但外部一挪（Xwayland 应用 `XWarpPointer`，
+  或有人直接 `swaymsg seat … cursor set`）就滞后且无从察觉——实测偏差可以到 (−701, −454)。
+  因此**只报同一调用自己断言过的位置**：`move`、带 `at` 的 `click`、带 `from` 的 `drag` 回报坐标，
+  而"点在/拖自光标当前所在处"不报——宁可不说，也不报一个可能已经过期的数。截图里的指针由合成器
+  绘制，始终是这一帧的事实。唯一会**做错事**的消费点是 `wlrctl` 相对移动：它现在先把指针归位到
+  布局左上角（实测一个满屏的负向位移会被夹到 (0,0)）再算 delta，所以过期记录不会累积成偏差。
 - **长按现在能做了**（原限制已解除）：`wayland_input` 有 `press`/`release` 两个原语，会话级持久
   虚拟指针跨调用保持按键状态，所以"按住 >0.45 秒"（原扫雷用例）与 `drag` 都能直接表达。**键盘
   仍然不能按住**：`wtype` 每次调用都新建并销毁一个虚拟键盘，键位状态不跨调用（与 §3.3 里
@@ -804,7 +814,7 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
    （改包名/`client.js` 的 id/patch 行名必跑）、`.probe/check-degraded.mjs`（改依赖表、
    探测逻辑或降级文案必跑）、`.probe/check-panel.mjs`（改面板 UI/文案/控件必跑）、
    `.probe/check-pointer.mjs`（改 `pointer.js` 或指针注入路径必跑）、`.probe/check-input.mjs`
-   （改 `wayland_input` 的指令表/校验必跑）、`.probe/check-launch.mjs`（改 `wayland_launch` 的
+   （改 `wayland_input` 的指令表/校验/回报字段必跑）、`.probe/check-launch.mjs`（改 `wayland_launch` 的
    结果字段或渲染必跑）、`.probe/check-cursor.mjs`（改光标主题解析、生成的 sway.conf 或
    `wayland_check` 的 cursor 行必跑）、`.probe/check-overlay.mjs`（改 `overlay.js`、PNG 编解码、
    `pngjs` 版本或标尺绘制必跑；不需要工具链）、`.probe/check-screenshot.mjs`（改截图路径、`region`/`scale`/`grid`

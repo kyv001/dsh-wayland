@@ -15,6 +15,12 @@
  *     action index, the directive and the field named — and with a migration hint
  *     for the pre-redesign `{type: ...}` shape
  *   - a well-formed payload is not rejected as a payload error
+ *   - what a call reports about the pointer: a position only when that same call
+ *     asserted one, because no compositor API reads the cursor position back.
+ *     This half drives real directives through a fake session (fake sway, fake
+ *     toolchain). `drag` is the exception — holding a button needs the
+ *     virtual-pointer protocol, which the fake session does not speak — so the
+ *     drag shape is measured live instead.
  *
  * Failure *state* is pinned by what the error says, not by prose in the tool
  * description: a rejection names the action index, the directive and the field,
@@ -23,7 +29,7 @@
  * Run: node .probe/check-input.mjs
  */
 import { dshToolsPath } from './dsh-tools.mjs'
-import { rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -31,7 +37,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN = join(HERE, '..', 'plugin', 'host.js')
 
 /* The schema must also pass the real Harness validator, not just look right. */
-const { assertSupportedJsonSchema } = await import(dshToolsPath())
+const { assertSupportedJsonSchema, validateJsonSchemaValue } = await import(dshToolsPath())
 const { apply } = await import(PLUGIN)
 
 const failures = []
@@ -132,6 +138,99 @@ await rejects([], 'at least one action', 'empty list')
   check(/action 0 \(move\): "to" must be \[x, y\]/.test(error ?? ''), `payload errors must precede session lookup, saw ${JSON.stringify(error)}`)
 }
 
+/* ------------------------------------- what a call reports about the pointer */
+
+/* The cursor's position cannot be read back from a compositor, so the only
+   position this plugin can honestly report is one the same call asserted. A fake
+   session makes that checkable end to end: fake sway answers as ready, every
+   `swaymsg` works except moving the cursor (which forces the relative `wlrctl`
+   path — the one that must re-home before it can trust a delta), and `wlrctl`
+   records the argv it was called with. */
+{
+  const TMP = mkdtempSync(join(HERE, '.tmp-input-'))
+  const binDir = join(TMP, 'bin')
+  const wlrctlLog = join(TMP, 'wlrctl.log')
+  mkdirSync(binDir, { recursive: true })
+  /* sway writes the IPC socket the plugin waits for and stays alive so the
+     session is not declared dead. It runs on this node binary by absolute path,
+     because this phase empties PATH so that only the fake toolchain resolves. */
+  writeFileSync(join(binDir, 'sway'),
+    `#!${process.execPath}\n`
+    + `import { writeFileSync } from 'node:fs'\n`
+    + `if (process.argv.includes('--version')) { console.log('sway version fake'); process.exit(0) }\n`
+    + `writeFileSync(process.env.XDG_RUNTIME_DIR + '/sway-ipc.1.1.sock', '')\n`
+    + `setTimeout(() => {}, 60000)\n`,
+    { mode: 0o755 })
+  writeFileSync(join(binDir, 'swaymsg'),
+    '#!/bin/sh\ncase "$*" in *"cursor set"*) exit 1 ;; *) exit 0 ;; esac\n', { mode: 0o755 })
+  writeFileSync(join(binDir, 'wlrctl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${wlrctlLog}'\nexit 0\n`, { mode: 0o755 })
+  for (const name of ['grim', 'wtype']) writeFileSync(join(binDir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+  const mounted = []
+  delete globalThis[Symbol.for('dsh-wayland.host.applied')]
+  process.env.PATH = ''
+  apply({
+    tools: { register: (definition) => { mounted.push(definition); return () => {} } },
+    webServer: { tapIndex: () => () => {}, register: () => () => {} },
+    effect: (callback) => { callback?.(); return () => {} },
+    get: () => undefined,
+    on: () => () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  }, { binDir, sessionRoot: join(TMP, 'root') })
+
+  const byName = new Map(mounted.map((entry) => [entry.name, entry]))
+  const created = await byName.get('wayland_session_create').execute({ name: 'input-report', width: 400, height: 300 })
+  const inputTool = byName.get('wayland_input')
+
+  /** Run one call, then validate and render it the way the Harness would. */
+  const call = async (actions) => {
+    const value = await inputTool.execute({ session: created.id, actions })
+    validateJsonSchemaValue(inputTool.output.schema, value, 'value')
+    const text = inputTool.output.render({ session: created.id, actions }, value).map((block) => block.text).join('\n')
+    return { value, text }
+  }
+
+  {
+    const { value } = await call([{ do: 'move', to: [120, 80] }])
+    check(JSON.stringify(value.pointer) === JSON.stringify({ x: 120, y: 80 }),
+      `a call that moved the pointer must report where it put it, saw ${JSON.stringify(value.pointer)}`)
+  }
+  {
+    const { value } = await call([{ do: 'wait', ms: 0 }])
+    check(value.pointer === undefined,
+      `a call that never positioned the pointer must not report one, saw ${JSON.stringify(value.pointer)}`)
+  }
+  {
+    /* The model reads the applied entries, so a coordinate that cannot be trusted
+       must not turn up there either. */
+    const { value, text } = await call([{ do: 'click' }])
+    check(value.applied[0]?.click?.at === undefined,
+      `a click without "at" must not report a position, saw ${JSON.stringify(value.applied[0])}`)
+    check(text.split('\n')[1] === '- {"click":{"button":"left","times":1}}',
+      `the rendered result must carry no coordinate for a position-less click, saw ${JSON.stringify(text)}`)
+  }
+  {
+    const { value } = await call([{ do: 'click', at: [300, 200] }])
+    check(JSON.stringify(value.applied[0]?.click?.at) === JSON.stringify([300, 200]),
+      `a click with "at" must report that point, saw ${JSON.stringify(value.applied[0])}`)
+  }
+  {
+    /* swaymsg refuses `cursor set` above, so this move falls to the relative
+       `wlrctl` path — which must re-home on the layout corner first, or a record
+       that an outside move falsified would compound into a wrong landing spot. */
+    writeFileSync(wlrctlLog, '')
+    await call([{ do: 'move', to: [120, 80] }])
+    const calls = readFileSync(wlrctlLog, 'utf8').trim().split('\n')
+    check(calls[0] === 'pointer move -400 -300',
+      `the relative path must home on the layout corner first, saw ${JSON.stringify(calls)}`)
+    check(calls[1] === 'pointer move 120 80',
+      `then move by the absolute target measured from that corner, saw ${JSON.stringify(calls)}`)
+  }
+
+  await byName.get('wayland_session_close').execute({ session: created.id })
+  rmSync(TMP, { recursive: true, force: true })
+}
+
 rmSync(join(HERE, '.tmp-input-root'), { recursive: true, force: true })
 
 if (failures.length > 0) {
@@ -139,4 +238,4 @@ if (failures.length > 0) {
   console.log(`input check failed: ${failures.length} problem(s)`)
   process.exit(1)
 }
-console.log('input check ok: oneOf union of 10 directives, sealed variants, validate-before-execute with indexed errors')
+console.log('input check ok: oneOf union of 10 directives, sealed variants, validate-before-execute with indexed errors, pointer reported only when the call asserted it')
