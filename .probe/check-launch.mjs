@@ -13,15 +13,23 @@
  *   - `env` states its shape, the merge, and the DISPLAY rule
  *   - every outcome renders a different, actionable line, and `exited` names the
  *     exit code and the log the output went to
+ *   - the window this call waits for is found even when the program it started is
+ *     only the launcher: the process walk reaches any depth (against a real
+ *     `/proc` tree), and a single window that appeared after the launch is adopted
+ *     when the hand-off leaves the process tree entirely
  *
  * Run: node .probe/check-launch.mjs
  */
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { rmSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const { apply } = await import(join(HERE, '..', 'plugin', 'host.js'))
+/** `DSH_WAYLAND_HOST` checks an artifact other than the working copy — the file
+ *  the Host half will actually run. */
+const PLUGIN = process.env.DSH_WAYLAND_HOST ?? join(HERE, '..', 'plugin', 'host.js')
+const { apply, descendantPids, windowOfLaunch } = await import(PLUGIN)
 
 const failures = []
 const check = (condition, message) => { if (!condition) failures.push(message) }
@@ -90,6 +98,48 @@ check(/wait was false/.test(rendered.skipped), `skipped outcome must explain its
 
 const lines = Object.values(rendered)
 check(new Set(lines).size === lines.length, 'the four outcomes must not render the same text')
+check(/a process it started/.test(outcome?.description ?? '') && /single window this call added/.test(outcome?.description ?? ''),
+  'the outcome field must say that a launcher\'s child window counts, and that one new window is adopted')
+
+/* ------------------------------------------- which window belongs to a launch */
+{
+  /* A real tree three levels deep: this probe -> bash -> subshell -> sleep. The
+     subshell must survive (not exec into sleep) for the depth to be real. */
+  const shell = spawn('bash', ['-c', '(sleep 30; :) & echo CHILD $!; wait'], { stdio: ['ignore', 'pipe', 'ignore'] })
+  let text = ''
+  shell.stdout.on('data', (chunk) => { text += chunk })
+  const deadline = Date.now() + 4000
+  while (!/CHILD \d+/.test(text) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+  const delegate = Number(/CHILD (\d+)/.exec(text)?.[1] ?? 0)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const seen = descendantPids(shell.pid)
+  check(seen.has(shell.pid), 'the walk must include the root')
+  check(seen.has(delegate), `the walk must reach a forked child, saw ${JSON.stringify([...seen])}`)
+  check([...seen].length >= 3, `the walk must reach any depth, saw ${JSON.stringify([...seen])}`)
+  check(!seen.has(process.pid), 'the walk must not include unrelated processes')
+  check(!seen.has(1), 'the walk must not walk up into init')
+
+  /* The matching rule itself, driven with those real pids plus synthetic windows. */
+  const win = (id, pid, visible = true) => ({ id, pid, visible })
+  check(windowOfLaunch([win(1, 4242)], 4242, new Set())?.id === 1, 'a window of the spawned process must be adopted')
+  check(windowOfLaunch([win(1, delegate)], shell.pid, new Set())?.id === 1,
+    'a window of a process the launch forked must be adopted, whatever the depth')
+  check(windowOfLaunch([win(1, delegate), win(2, 999999)], shell.pid, new Set())?.id === 1,
+    'a descendant must win over a window this call merely added')
+  check(windowOfLaunch([win(2, 999999)], shell.pid, new Set())?.id === 2,
+    'the single window this call added must be adopted when the process tree is empty')
+  check(windowOfLaunch([win(2, 999999), win(3, 888888)], shell.pid, new Set()) === null,
+    'two new windows with no descendant are ambiguous and must not be guessed at')
+  check(windowOfLaunch([win(2, 999999)], shell.pid, new Set([2])) === null,
+    'a window that was already on screen must never be adopted')
+  check(windowOfLaunch([win(1, delegate, false)], shell.pid, new Set()) === null,
+    'an invisible window is not the window this call produced')
+
+  for (const pid of [shell.pid, delegate]) { try { process.kill(pid, 'SIGKILL') } catch {} }
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  check([...descendantPids(shell.pid)].length === 1, 'a process that is gone must leave no descendants behind')
+  console.log('--- window matching: any-depth descendants, one new window, no guessing')
+}
 
 rmSync(join(HERE, '.tmp-launch-root'), { recursive: true, force: true })
 
@@ -98,4 +148,4 @@ if (failures.length > 0) {
   console.log(`launch check failed: ${failures.length} problem(s)`)
   process.exit(1)
 }
-console.log('launch check ok: four distinct outcomes, indexed result, and the shell route told exactly once')
+console.log('launch check ok: four distinct outcomes, indexed result, shell route told once, and a window matched through launchers')

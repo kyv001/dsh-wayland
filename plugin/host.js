@@ -305,6 +305,84 @@ function runForking(bin, args, { env, timeoutMs = 8000 } = {}) {
 
 /* --------------------------------------------------------------- sessions */
 
+/**
+ * `pid` plus every live process below it, read from `/proc`.
+ *
+ * A launcher is rarely the program that draws: `flatpak run org.kde.kmines`
+ * becomes bwrap, which forks the app two levels down — measured on this machine,
+ * the spawned pid was 77575 and the window belonged to 77586, whose parent chain
+ * is 77586 -> 77585 (bwrap) -> 77575. Matching only the spawned pid is why the
+ * wait sat through its whole timeout with KMines already on screen.
+ *
+ * Cross-namespace caveat: inside a sandbox the app's host-visible pid is what the
+ * compositor reports, so this walk (on the host) is the right one to compare with.
+ *
+ * Exported for `.probe/check-launch.mjs`, which pins it against a real process tree.
+ *
+ * @param {number} pid - root process.
+ * @returns {Set<number>} the root and its descendants, at any depth.
+ */
+export function descendantPids(pid) {
+  const children = new Map()
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue
+    let parent
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, 'utf8')
+      /* comm can contain spaces and parentheses, so the fields after the *last*
+         ")" are the reliable ones: state, ppid, pgrp, ... */
+      parent = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+    } catch {
+      continue /* the process went away while we looked at it */
+    }
+    if (!children.has(parent)) children.set(parent, [])
+    children.get(parent).push(Number(entry))
+  }
+  const seen = new Set([pid])
+  const queue = [pid]
+  while (queue.length > 0) {
+    for (const child of children.get(queue.pop()) ?? []) {
+      if (seen.has(child)) continue
+      seen.add(child)
+      queue.push(child)
+    }
+  }
+  return seen
+}
+
+/**
+ * How long a launch keeps watching after its own process has ended.
+ *
+ * `setsid foot -e …` forks, the wrapper exits at once, and foot's window maps a
+ * moment later — measured: reporting `exited` immediately meant reporting it while
+ * the window was appearing. A program that really died produces nothing, so this
+ * only delays the answer in a case that is a failure anyway.
+ */
+const EXIT_GRACE_MS = 1500
+
+/**
+ * The window this launch produced, if it is on screen yet.
+ *
+ * First a descendant of the spawned process — that covers launchers like
+ * `flatpak run` that fork the real program a few levels down. Otherwise, only
+ * when exactly one window appeared that was not on screen before the launch, that
+ * window: that is how a hand-off outside the process tree (activation, `setsid`,
+ * an already-running instance) is still attributed. Several new windows with no
+ * descendant is ambiguous, so this returns null and the caller keeps waiting
+ * rather than guessing.
+ *
+ * @param {Array<object>} found - windows in the session, from {@link windows}.
+ * @param {number} pid - the process this launch spawned.
+ * @param {Set<number>} beforeIds - window ids that existed before the launch.
+ */
+export function windowOfLaunch(found, pid, beforeIds) {
+  const mine = descendantPids(pid)
+  const own = found.find((w) => w.visible && w.pid !== null && mine.has(w.pid))
+  if (own) return own
+  const fresh = found.filter((w) => w.visible && !beforeIds.has(w.id))
+  return fresh.length === 1 ? fresh[0] : null
+}
+
 function createManager(ctx, cfg) {
   const sessions = new Map()
   let counter = 0
@@ -747,6 +825,9 @@ function createManager(ctx, cfg) {
     const display = await xwaylandDisplay(session)
     const extra = { ...env }
     if (display) extra.DISPLAY = display
+    /* Windows already on screen cannot belong to a program that has not started
+       yet, so this is what makes "the one new window" safe to adopt below. */
+    const beforeIds = wait ? new Set((await windows(session.id).catch(() => [])).map((w) => w.id)) : null
     const out = await open(path.join(session.dir, 'apps.log'), 'a')
     const child = spawn(bin, args.map(String), {
       env: envFor(session, extra),
@@ -782,19 +863,31 @@ function createManager(ctx, cfg) {
     let outcome = wait ? 'timeout' : 'skipped'
     if (wait) {
       const deadline = Date.now() + waitMs
+      let exitedAt = null
       while (Date.now() < deadline) {
         await sleep(250)
         const found = await windows(session.id).catch(() => [])
-        window = found.find((w) => w.pid === child.pid && w.visible) ?? null
+        window = windowOfLaunch(found, child.pid, beforeIds)
         if (window) {
           outcome = 'window'
           break
         }
         if (child.exitCode !== null) {
-          outcome = 'exited'
-          break
+          /* A launcher can exit before the window it started maps — `setsid foot`
+             forks, the wrapper is gone, and foot's window appears a moment later.
+             Measured: with no grace this reported `exited` while that window was
+             mapping. Nothing appears in an immediate failure, so the grace only
+             costs a moment in the case that is already a failure. */
+          exitedAt ??= Date.now()
+          if (Date.now() - exitedAt >= EXIT_GRACE_MS) {
+            outcome = 'exited'
+            break
+          }
         }
       }
+      /* A short waitMs can expire before the grace does; a process that is gone
+         must never be reported as still running. */
+      if (outcome === 'timeout' && child.exitCode !== null) outcome = 'exited'
     }
     return {
       pid: child.pid,
@@ -1730,7 +1823,7 @@ function registerTools(ctx, manager, cfg) {
         properties: {
           pid: { type: 'integer', required: true },
           command: { type: 'string', required: true },
-          outcome: { type: 'string', required: true, enum: ['window', 'exited', 'timeout', 'skipped'], description: 'window: a window for that pid mapped within waitMs. exited: the program ended first; exitCode says how. timeout: still running with no window yet, so check wayland_windows later. skipped: wait was false, so nothing was awaited.' },
+          outcome: { type: 'string', required: true, enum: ['window', 'exited', 'timeout', 'skipped'], description: 'window: a window of that program — including one belonging to a process it started, or the single window this call added — mapped in time. exited: the program ended without one; exitCode says how. timeout: still running with no window yet, so check wayland_windows later. skipped: wait was false, so nothing was awaited.' },
           exitCode: { type: 'integer', description: 'Exit status, present once the program has ended.' },
           log: { type: 'string', required: true, description: 'Session log every launched program appends its output to.' },
           window: {

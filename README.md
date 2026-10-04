@@ -53,7 +53,7 @@ docs/
   check-panel.mjs       离线校验：用迷你 React 把面板组件树渲染出来，断言中英双语与字典键齐平、**悬停说明可达**、**跟随宿主字号**、locale 迟挂载、字典被拒/注册抛错都不致命、无 Live/Crisp；`DSH_WAYLAND_CLIENT=<file>` 可改测服务端实际提供的那份字节
   check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手、报文与**只读能力探测**（不建设备）——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
   check-input.mjs       离线校验：`wayland_input` 的 10 个变体（required/properties 逐条钉死）与 9 条报错文案，并断言"校验先于会话查找"
-  check-launch.mjs      离线校验：`wayland_launch` 的结果契约——四种 outcome 必须渲染成四句不同的话（exited 点名退出码与日志、timeout 说明进程还在跑），"没有 shell" 只写在 `command` 参数上
+  check-launch.mjs      离线校验：`wayland_launch` 的结果契约——四种 outcome 必须渲染成四句不同的话（exited 点名退出码与日志、timeout 说明进程还在跑），"没有 shell" 只写在 `command` 参数上；并对着**真实 `/proc` 树**钉住"哪个窗口算这次启动的"（任意深度的子进程、只有一个新窗口时才认领、已有窗口绝不认领）
   check-cursor.mjs      离线校验：光标主题——配置的主题与尺寸写进生成的 sway.conf、装不上的主题要如实报 warn（并说明会退回 sway 自带光标）、自动探测结果与配置文件必须一致、`wayland_check` 带 cursor 行、截图描述写明指针就在图里
   render-tools.mjs      重新渲染 docs/tool-definitions.md
 ```
@@ -533,6 +533,22 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   `/frame` 回 400。
   顺带修掉反证里露出来的另一个小 bug：同一毫秒内到两帧会让平滑 fps 变 `Infinity`，HUD 就真的
   打印 `● Infinity fps`（现在 delta 为 0 时跳过，探针断言 HUD 不出现 `Infinity`/`NaN`，同样反证过）。
+- 再修用户报的 launch 等待：**窗口明明出现了，`wayland_launch` 却等到超时**。按用户给的例子实测
+  （flatpak KMines）拿到根因：等待条件原来是 `w.pid === child.pid`，而 `flatpak run` 的进程树是
+  `flatpak → bwrap → … → kmines`——启动的 pid 是 77575（bwrap），窗口属于 77586（kmines，父链
+  77585 bwrap → 77575），**差一个进程层级就永远匹配不上**，于是 30 秒超时、而窗口已经在屏幕上。
+  还有第二种形态：`setsid foot -e sleep 30` 的启动进程立刻退出（应用被 reparent 到 init），旧代码
+  在窗口 map 之前就回 `exited`。修法三条：①按 `/proc` 走**任意深度的子孙进程**（`descendantPids`）；
+  ②没有子孙匹配时，若**恰好多出一个启动前不存在的窗口**就认领它（覆盖 reparent/dbus 激活这类
+  脱离进程树的交接；多个新窗口则不猜）；③启动进程退出后**再等 1.5 秒**看有没有交接窗口
+  （`EXIT_GRACE_MS`），并把"deadline 到了但进程已退出"从 `timeout` 纠正为 `exited`。
+  实测（同一台机器、真应用）：KMines **30 s 超时 → 584 ms 拿到 `window` 5/`org.kde.kmines`**；
+  `setsid foot` **`exited` → 316 ms 拿到 `window` 6/foot**（exitCode 0 仍如实带上）；`true`/`false`
+  仍回 `exited`（0/1，晚 1.5 s）、`sleep 30` 回 `timeout`、`wait:false` 回 `skipped`。
+  `.probe/check-launch.mjs` 用一个真实三层进程树（probe → bash → 子 shell → sleep）钉住走树的深度、
+  排除无关进程与 init、进程消失后不留残余，并用合成窗口钉住认领规则（子孙优先、唯一新窗口才认领、
+  两个新窗口不猜、已有窗口/不可见窗口不认领）。**反证**：把 `descendantPids` 换回"只返回自己"→
+  3 条断言失败。schema 不变（`outcome` 在输出 schema 里，不计入那段 token）。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；
@@ -649,6 +665,10 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
   `swaymsg seat … cursor set` + `wlrctl`，而 `wlrctl` 每次新建/销毁虚拟指针正是 §3.3 里那个
   丢 click 的形态——所以那时只能保证移动与键盘，click 不可靠（sway/wlroots 一直提供该协议，
   本机不受影响）。同一情形下截图里也不会有指针：没有指针设备就没有光标图形。
+- **`wayland_launch` 认领窗口的边界**：`window` 靠"子孙进程的窗口"或"这次调用唯一新增的窗口"判定。
+  如果程序把请求交给了**已经在运行的实例**（D-Bus 激活、`firefox` 复用已有窗口），既没有子孙进程也
+  没有新窗口，只能回 `exited`/`timeout`——这时用 `wayland_windows` 看那个已有窗口。反过来，如果
+  启动期间有**多个**互不相关的新窗口出现且没有一个是子孙，插件不猜，仍是 `timeout`。
 - **指针图形取决于机器上装了哪些 xcursor 主题**：`cursorTheme` 为空时只按 `XCURSOR_PATH` 与常见
   icons 目录探测"第一个真的带 `cursors/left_ptr` 的主题"；一个都没有时用 wlroots 内建的 fallback
   箭头（较小，实测 10x16，本机 40 个非背景像素）。`wayland_check` 的 cursor 行会说明到底用的哪一个，
