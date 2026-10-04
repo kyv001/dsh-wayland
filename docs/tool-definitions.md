@@ -5,7 +5,7 @@ the live definitions, not hand-copied). Descriptions carry the purpose, when to
 use the tool, and what it returns; defaults, units and id provenance live on the
 parameters they belong to.
 
-8 tools, 9509 characters of schema in total.
+8 tools, 10824 characters of schema in total.
 
 ## `wayland_session_create`
 
@@ -61,13 +61,19 @@ List the windows currently mapped on a virtual desktop: window id, app id (or X1
 
 ## `wayland_screenshot`
 
-Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. At the default scale the image is session pixels, so what you see is where pointer actions land. The pointer is drawn at its current position; wayland_check reports the cursor theme in use. Errors if window is not currently mapped.
+Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. At the default scale the image is session pixels, so what you see is where pointer actions land; `origin` and `scale` carry the mapping back to input coordinates. Capture one `region` instead of the whole screen to spend less on the image and read a small area at full resolution. Pass `grid` when you need to know *where* something is: it prints the session coordinates onto the picture. The pointer is drawn at its current position; wayland_check reports the cursor theme in use. Errors if window is not currently mapped.
 
 | parameter | type | required | description |
 |---|---|---|---|
 | `session` | string | yes | Session id from wayland_session_list or wayland_session_create. |
 | `window` | integer | no | Window id from wayland_windows; omit to capture the whole screen. |
-| `scale` | number | no | Size multiplier: 1 captures native pixels, 0.5 halves both dimensions. Coordinates in the returned image are session pixels divided by scale, so multiply by 1/scale to get the x/y wayland_input wants. |
+| `region` | object | no | Area to capture, in absolute session pixels. Overrides `window`. A region running past the screen edge is clipped, not rejected. |
+| `region.x` | integer | yes | Left edge in session pixels. |
+| `region.y` | integer | yes | Top edge in session pixels. |
+| `region.width` | integer | yes | Width in session pixels. |
+| `region.height` | integer | yes | Height in session pixels. |
+| `grid` | number | no | Draw a coordinate grid with a rule every N session pixels, each rule labelled with the session coordinate it sits on — x values along the top edge, y values down the left edge. Read the label and pass that number straight to wayland_input: no arithmetic, and no estimating a position from a picture. The label is always the coordinate wayland_input takes even when the capture is magnified, because the rules are drawn after scaling. Minimum 5; 50 or 100 is usually right. Forces a PNG capture. |
+| `scale` | number | no | Size multiplier: 1 captures native pixels (one image pixel per session pixel), 2 doubles both dimensions so small text becomes legible, 0.5 halves them. The image is session pixels × scale. |
 
 ## `wayland_input`
 

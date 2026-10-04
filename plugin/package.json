@@ -27,6 +27,7 @@
   "files": [
     "host.js",
     "pointer.js",
+    "overlay.js",
     "client.js",
     "cordis.patch.yml",
     "icon.svg",
@@ -46,7 +47,9 @@
       ]
     }
   },
-  "dependencies": {},
+  "dependencies": {
+    "pngjs": "^7.0.0"
+  },
   "publishConfig": {
     "access": "public"
   }

@@ -13,9 +13,9 @@
 
 | 项 | 现状 |
 |---|---|
-| 插件包 | `dsh-wayland` 0.1.0，源码即 [`plugin/`](plugin)；已可按单包发布（`private` 已去掉、有 icon/locale/LICENSE，`npm pack` 9 个文件 34.2 kB），尚未发布 |
+| 插件包 | `dsh-wayland` 0.1.0，源码即 [`plugin/`](plugin)；已可按单包发布（`private` 已去掉、有 icon/locale/LICENSE，`npm pack` 11 个文件 60.3 kB），尚未发布 |
 | 安装形态 | 作为普通 bundle 装进本机 DSH profile（未发布 npm，所以是 `link:<仓库>/plugin` + `dsh.profile.bundles` 里的一行，`node_modules/dsh-wayland` 是指向仓库的软链），Plugin Manager 中 enabled；profile patch 里只有一条 `- id: dsh-wayland / disabled: false`，没有任何机器路径 |
-| 依赖 | 本体零 npm 依赖；外部**必需** `sway`/`swaymsg`/`grim`/`wtype`，`wlrctl` 降为**可选**（只在合成器没有虚拟指针协议时兜底）；按 `binDir` → `PATH` 解析；**指针注入默认不用任何外部二进制**——插件自己维持一个会话级虚拟指针（见 §3.3）；**仓库里不含工具链、不含发行版或包管理器配方**；缺依赖不崩，工具与面板都会报缺哪几个、各自干什么、怎么装（见 §3.6） |
+| 依赖 | 本体只有 1 个 npm 依赖——`pngjs`，锁在 `overlay.js` 的 PNG 编解码里（见 §6）；其余模块零依赖。外部**必需** `sway`/`swaymsg`/`grim`/`wtype`，`wlrctl` 降为**可选**（只在合成器没有虚拟指针协议时兜底）；按 `binDir` → `PATH` 解析；**指针注入默认不用任何外部二进制**——插件自己维持一个会话级虚拟指针（见 §3.3）；**仓库里不含工具链、不含发行版或包管理器配方**；缺依赖不崩，工具与面板都会报缺哪几个、各自干什么、怎么装（见 §3.6） |
 | 依赖现状 | **本机（当前系统配置）工具链已就绪**：PATH 上有 `sway`/`swaymsg`/`grim`/`wtype`/`wlrctl`（实测解析到 `/etc/profiles/per-user/kyv/bin/*`），没有配 `binDir`；可选缺 `wayvnc`/`wf-recorder`/`xterm`。插件 `ready`，8 个工具与面板取帧都可用（§9 有本轮实测记录） |
 | 工具 | 8 个：`wayland_session_create / _list / _check / _close / launch / windows / screenshot / input`。端到端实测跑通（含图像返回）；工具链就绪时 8 个全部可用，`wayland_check` 兼作依赖与光标主题体检，缺依赖时其余工具按 §3.6 报缺什么 |
 | 面板 | 右栏 `wayland` tab：字号跟随侧栏（14px）、en/zh 双语（跟随 DSH 的语言设置）、每个控件都有悬停说明、**没有 Live/Crisp 切换**（帧格式由 `liveMediaType` 决定）。帧/HUD/输入回传已由用户目视确认；工具链就绪时面板显示实时画面（注册状态已用 Client inspect 在实时页面核对，像素仍由用户目视） |
@@ -35,6 +35,7 @@ LICENSE                 MIT（根目录副本；与 plugin/LICENSE 逐字节一�
 plugin/                 DSH bundle（源码即安装源，link 安装）
   host.js               Host half：会话管理器 + 依赖探测/报告 + HTTP 取帧/控制服务 + 8 个工具定义（含 `wayland_check` 自检）（约 2000 行）
   pointer.js            会话级持久虚拟指针：手写 Wayland 协议（只用 node 内置），绝对定位 + 按键 + 滚轮（约 350 行）
+  overlay.js            截图叠加：PNG 编解码走 `pngjs`（插件唯一的 npm 依赖，只出现在这个文件里）+ 自带的 5×7 位图字体，给 `wayland_screenshot` 的 `grid` 画带坐标标注的标尺（约 190 行）
   client.js             Client half：右栏 tab（逐帧 fetch 循环、HUD、依赖横幅、输入回传）+ **面板全部文案**（内联 `DICT`，49 键 × 中英）
   package.json          bundle 清单：name/icon/files/exports + dsh.bundle.patch + dsh.client
   cordis.patch.yml      插入 dsh-wayland 行（**不含机器相关路径**）
@@ -271,6 +272,60 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
   约 986 CSS px 栏宽）。要 1:1 就得让客座按逻辑像素渲染（sway output scale = dpr），
   那会牵动坐标语义（sway IPC 是逻辑像素、grim 是物理像素），目前**未做**。
 
+### 3.8 截图给模型看：`region`、`scale` 与坐标网格
+
+`wayland_screenshot` 原本只产出"整屏一张图"，模型要在这张图里**猜**一个格子或按钮在哪。猜错一次
+就是一轮截图，比省下的那点文字贵得多。所以本轮加的两件事都挂在已有工具的参数上，不新增工具
+（AGENTS.md：能用一个参数覆盖的，就不要新增工具）：
+
+- **`region`**：任意矩形，会话像素、绝对坐标。`capture()` 本来就在用 `grim -g`（窗口裁剪走的就是它），
+  只是被 `win.rect` 独占；现在优先级是 `region` > `window` > 整屏。越界是**裁剪**而不是报错
+  （"从这儿到角落"是常见说法），并且抓完会用**真实回来的像素**重新量宽高，所以裁剪永远不会让标尺错位。
+- **`grid`**：每 N 会话像素画一条标尺，每条线**标上它所在的会话坐标**——x 在顶边、y 在左边。
+  模型读到数字直接交给 `wayland_input`，不做算术、不从图上估位置。
+- **`scale`**：现在允许 > 1（此前只当缩小用）。**先放大再画线**：标尺由插件在 `grim -s` 之后画进像素，
+  所以线在放大图里依然锐利（并按整数倍加粗）、标注清晰，而**标注值始终是 `wayland_input` 认的那个坐标**。
+
+返回里因此多了 `origin`（图像左上角的会话坐标）与 `scale`，两者的契约是一行：
+`会话坐标 = origin + 图像像素 / scale`。
+
+实现落在新的 [`plugin/overlay.js`](plugin/overlay.js)：PNG 编解码改用 **`pngjs`**——插件唯一的
+npm 依赖，只出现在这个文件里；上面那个 5×7 位图字体和绘图逻辑仍然是自己的（pngjs 是编解码器，
+不是画布）。它像 `pointer.js` 一样按 mtime 加戳后动态导入，改完不必重启 DSH。
+
+**为什么允许这一个依赖**（原来自带 ~185 行手写编解码，只覆盖 grim 的 8-bit RGB/RGBA）：
+pngjs 解出来的 RGBA 与**独立的 Pillow 解码**在 6 种格式上逐字节相同——包括手写版直接拒绝的
+palette、隔行与 16-bit，所以这是纯粹的覆盖面扩大，没有行为回退。代价是编码变慢、收益是文件更小；
+两者都按下面的实测取舍，详见 §6。
+
+**本机实测**（`.probe/check-screenshot.mjs`，真 sway + 真 grim，28 条断言全过）：
+
+| 调用 | 实测结果 |
+|---|---|
+| 整屏，无网格 | 1280×800，`origin [0,0]`、`scale 1`，仍是部署配置的 JPEG |
+| `region {20,30,200,120}` | 报 `origin [20,30]`；JPEG 的 SOF 标记实测正是 200×120（grim 真按矩形出图） |
+| `region {0,0,200,120}, grid 50` | **强制 PNG**；竖线实测落在图 x=0/50/100/150，横线落在 y=0/50/100 |
+| `region {37,11,120,80}, scale 2, grid 50` | 图 240×160；会话 x=50/100/150 落在图 x=26/126/226，即 `(x-37)×2` |
+| `region {400,280,500,500}`（越界） | 不报错，裁成 80×40，`origin` 仍是 `[400,280]` |
+
+离线那半边在 `.probe/check-overlay.mjs`：10 张**真实 PNG 字节**（内嵌 base64，覆盖全部 5 种滤波器 +
+RGB/RGBA，以及手写版会拒绝的 palette/隔行/16-bit）解码后逐像素比对，每个 fixture 都是
+`pixel(x, y)` 的无损编码，所以同一个判定公式就能覆盖全部；外加编码往返、3 条坏输入必须报错、
+scale 1/2 两种落点、3 条 `grid` 参数拒绝路径。把这份校验指向被替换掉的手写编解码器，会精确地红在
+palette / 隔行 / 16-bit 这三条上（`FAILURES=3`），新用例是能区分新旧实现的。
+
+留档：整屏 + `grid 100` 见 [docs/screenshot-grid-demo.png](docs/screenshot-grid-demo.png)；
+`region {170,200,420,300}` + `scale 2` + `grid 50` 见
+[docs/screenshot-grid-zoom-demo.png](docs/screenshot-grid-zoom-demo.png)——那张图上的 200…550
+全是真实屏幕坐标，线是先放大后才画的。
+
+**取舍**：`grid` 要改像素，所以会强制 PNG；`screenshotMediaType: image/jpeg` 的部署在带网格时拿到 PNG。
+这是有意的——宁可换格式，也不返回一张没有标尺、却被模型当成有标尺的图。schema 总量
+9509 → 10824 字符（每轮多约 330 tokens），换掉的是一类"猜坐标、猜错重来"的往返。
+
+**没做**：网格自动检测。识别"这里有个表格/棋盘"是图像处理工具的活，不属于一个截图工具；模型自己
+知道该用 50 还是 100，而给它一个可能判错的自动检测，只会新增一个错误来源。
+
 ---
 
 ## 4. 性能实测（Ryzen 7 5800H；无 `/dev/dri`，pixman 软渲染）
@@ -291,7 +346,7 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9509 字符 schema ≈ 2.3k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低）。
+从代码渲染）。合计 10824 字符 schema ≈ 2.6k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低，`region`/`grid` 那轮回涨约 1.3k 字符，见 §3.8）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
 （指针动作返回时合成器已处理）都写在模型要读的那段里；**失败方式不写进描述，由报错本身说**
 （关一个已关闭的 id 会报错；非法载荷在发出任何事件前就被拒掉，报错点名第几条、哪个字段；
@@ -312,9 +367,33 @@ scroll / wait / raise）+ **4 个糖**（click / drag / type / key，语义被�
 
 ## 6. 依赖与安装
 
-包本体**零 npm 依赖**（`package.json` 里 `dependencies: {}`，只用 node 内置模块），所以
-`npm i dsh-wayland` / `dsh plugin --profile <p> add dsh-wayland` 不会拉任何东西；需要的是
-**外部 wlroots 工具链**，默认走 PATH，也可以用 `binDir` 钉住一个目录。
+包本体只有 **1 个 npm 依赖：`pngjs`**（写在 `package.json` 的 `dependencies` 里），而且只被
+[`plugin/overlay.js`](plugin/overlay.js) 的 PNG 编解码用到；`host.js` / `pointer.js` / `client.js`
+仍然只用 node 内置模块。需要另外准备的是**外部 wlroots 工具链**，默认走 PATH，也可以用
+`binDir` 钉住一个目录。
+
+**为什么是 pngjs、代价多少**：`grid` 要往像素里画线，就需要一个 PNG 编解码器。原来自带 185 行
+手写实现，只覆盖 grim 的 8-bit RGB/RGBA；pngjs 解出的 RGBA 与**独立 Pillow 解码**在 6 种格式
+上逐字节相同，并额外支持 palette / 16-bit / 隔行。本机实测（node v24.21.0，1280×800 的一帧
+UI 类画面，15 次均值）：
+
+| 环节 | 手写编解码 | pngjs | |
+|---|---|---|---|
+| 解码 | 14.0 ms | 13.5 ms | 持平 |
+| 编码 | 17.4 ms | 55.0 ms | 慢 3.2× |
+| `grid` 一整趟（解码 + 画线 + 编码） | 31.8 ms | 75.0 ms | **+43 ms** |
+| `grid` 输出的 PNG | 27.2 KiB | 11.6 KiB | **小 57%** |
+
+即每次带 `grid` 的截图多花约 43 ms（grim 抓图本身远不止这个量级），换来发给模型的 base64
+小一半多；两种实现画出的网格像素逐字节一致。数字取自 UI 类合成画面，纯噪声图上 pngjs 的逐行
+自适应滤波反而更大（+111%），但真实截图不是噪声。
+
+本仓是 link 安装的插件源，所以**克隆后要在 `plugin/` 里跑一次 `npm install`**（`node_modules/`
+已 gitignore，发布物由 `package.json` 的 `files` 决定、不含它）：
+
+```sh
+cd plugin && npm install          # 装 pngjs；发布成 npm 包时由 npm 正常解析，无需这一步
+```
 
 安装工具链（普通发行版就这一步，装完即在 `/usr/bin` 等标准位置）：
 
@@ -364,7 +443,7 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
 | `liveQuality` | `82` | 面板 JPEG 质量 |
 | `liveMediaType` | `image/jpeg` | 面板帧格式（`image/jpeg` / `image/png`）；面板里没有格式切换按钮，要 PNG 就改这里 |
 | `streamFps` / `streamScale` / `streamQuality` | `10` / `0.6` / `70` | 独立 MJPEG `/stream` 接口 |
-| `screenshotMediaType` | `image/png` | 模型工具截图用哪种格式（`image/png` / `image/jpeg`）。**不是工具参数**：模型不选格式，部署者选 |
+| `screenshotMediaType` | `image/png` | 模型工具截图用哪种格式（`image/png` / `image/jpeg`）。**不是工具参数**：模型不选格式，部署者选。带 `grid` 的调用是例外，一律返回 PNG，因为标尺要画进像素（§3.8） |
 | `screenshotQuality` | `85` | 上面选成 `image/jpeg` 时的质量。同样只是部署项 |
 | `inputLeadMs` / `inputKeyDelayMs` | `60` / `20` | 虚拟键盘等首次按键前的焦点握手时间、逐键间隔 |
 | `cursorTheme` | `''`（自动探测） | 指针图形用哪个 xcursor 主题。空 = 取本机第一个真的带 `cursors/left_ptr` 的主题；一个都找不到时 sway 用自带的较小 fallback 光标 |
@@ -567,12 +646,23 @@ token 文件 0600、48 位 hex，**卸载→重装前后是同一个 token**（�
 client 侧用 cordis Client inspect 读到实时插槽树里 `sidebar.right.pane.tab` 的 occupant 含
 `@local/dsh-wayland`（`active:true`；DSH 给本地 link 插件加 `@local/` 前缀）。
 
+**已验证（截图 `region`/`grid`，一半离线一半端到端）**：`check-overlay.mjs` 不需要任何工具链——
+10 张内嵌的真实 PNG 字节（覆盖 PNG 的 5 种行滤波器，加 RGB 与 RGBA 两种 colour type，再加手写
+编解码器会拒绝的 palette/隔行/16-bit）解出来逐像素等于构造它们时的原始像素，编码→解码往返逐字节
+相同，3 条坏输入（空 buffer / 非 PNG / 截断）如实报错，`grid` 在 `scale 1` 与 `scale 2` 下的落点分别是
+`session 步长的整数倍` 与 `(x-origin)×scale`，且 step 过小 / 非数字 / scale 为 0 三条都拒绝。
+把这份校验指向已删除的手写编解码器会精确红在新增的 3 张格式上，说明用例真的在区分新旧实现。
+`check-screenshot.mjs` 则**真的开一个 sway 会话、真的用 grim 抓图**：`region` 的 origin 与宽高如实回报、
+越界矩形被裁成 80×40 而不报错、`grid` 把部署配置的 JPEG 强制成 PNG、标尺在像素上的落点与预期一致、
+放大时映射是 `(x-origin)×scale`；缺工具链时它报 skipped 并 exit 0，**不**把"这台机器没有合成器"
+伪装成插件缺陷。
+
 **已验证（离线，`.probe/`，全程不需要任何工具链）**：三种工具链状态的降级行为——全缺时激活成功、
 `wayland_session_list` 报出 4 个缺失名与用途、`wayland_session_create` 报出安装命令、需要会话的
 工具报依赖而不是 `unknown session`、返回结构（含 `installHints`）通过真实 schema 校验；部分缺失时
 只报缺的那些；齐全时翻成 ready；报告里不含任何发行版特有机制（校验脚本会拦下这类文案）；
 包名/client id/patch 行名三处一致且 `files`/`exports`/icon/locale 齐全（`check-identity.mjs`）；
-8 个工具的 schema 通过真实校验器（`check-plugin.mjs`）。`npm pack --dry-run` 打 9 个文件 34.2 kB。
+8 个工具的 schema 通过真实校验器（`check-plugin.mjs`）。`npm pack --dry-run` 打 11 个文件 60.3 kB。
 `.probe/render-tools.mjs` 补上缺失的 `node:path`/`node:url` 导入后可以重渲染，产物与磁盘上的
 `docs/tool-definitions.md` **字节相同**（sha256 一致），所以 §5 的 7302 字符确实来自代码而不是手抄。
 四个脚本都按自身位置定位仓库、按运行中的 DSH 定位工具运行时（`$DSH_TOOLS` → `--app-path` → 父进程链），
@@ -714,7 +804,9 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
    `.probe/check-pointer.mjs`（改 `pointer.js` 或指针注入路径必跑）、`.probe/check-input.mjs`
    （改 `wayland_input` 的指令表/校验必跑）、`.probe/check-launch.mjs`（改 `wayland_launch` 的
    结果字段或渲染必跑）、`.probe/check-cursor.mjs`（改光标主题解析、生成的 sway.conf 或
-   `wayland_check` 的 cursor 行必跑）。
+   `wayland_check` 的 cursor 行必跑）、`.probe/check-overlay.mjs`（改 `overlay.js`、PNG 编解码、
+   `pngjs` 版本或标尺绘制必跑；不需要工具链）、`.probe/check-screenshot.mjs`（改截图路径、`region`/`scale`/`grid`
+   必跑；**需要工具链**，缺了就报 skipped）。
 3. （只有开发这个插件时才做）在 profile 里加开发行并**换 id + 换 `?v=N`**，同时确认 bundle 行是
    `disabled: true`（否则开发行会被挡住，见 §3.5）。普通用户跳过这一步。
 4. 重载会杀掉所有会话 → 重新建会话；若只改了 `client.js`，**重挂一次插件行再刷新页面**

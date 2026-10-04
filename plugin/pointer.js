@@ -19,7 +19,8 @@
  *    position itself: no origin, no accumulated drift, no state to desync.
  *
  * The wire protocol is spoken by hand (node builtins only: a unix socket plus
- * little-endian structs), because the plugin must stay dependency-free. Only the
+ * little-endian structs), keeping this module free of the plugin's one npm
+ * dependency. Only the
  * few objects this file needs are parsed; every other event is skipped by its
  * self-describing header size.
  *

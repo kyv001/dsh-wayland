@@ -76,6 +76,14 @@ for (const tool of tools) {
         lines.push(`| \`${prefix}${name}[].${childName}\` | ${typeOf(child)} | ${nestedRequired.has(childName) ? 'yes' : 'no'} | ${(child.description ?? '').replace(/\|/g, '\\|')} |`)
       }
     }
+    /* A plain object parameter (a capture region) is a table of its own fields,
+       so the document shows every property the model is actually given. */
+    if (node.type === 'object' && node.properties) {
+      const nestedRequired = new Set(node.required ?? [])
+      for (const [childName, child] of Object.entries(node.properties)) {
+        lines.push(`| \`${prefix}${name}.${childName}\` | ${typeOf(child)} | ${nestedRequired.has(childName) ? 'yes' : 'no'} | ${(child.description ?? '').replace(/\|/g, '\\|')} |`)
+      }
+    }
     /* A union of sealed variants is rendered as one table per variant, so the
        document shows the same union the model's schema does. */
     if (node.type === 'array' && Array.isArray(node.items?.oneOf)) {

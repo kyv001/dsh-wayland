@@ -3,8 +3,9 @@
  *
  * Runs headless Wayland (sway) sessions, one per "virtual desktop", and exposes
  * them to (a) the model as tools and (b) the right-sidebar UI as a small HTTP +
- * MJPEG surface. Everything is dependency-free: node builtins plus the external
- * wlroots toolchain located through `config.binDir`.
+ * MJPEG surface. This file is node builtins plus the external wlroots toolchain
+ * located through `config.binDir`; the plugin's single npm dependency lives in
+ * `overlay.js`.
  */
 import { spawn } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
@@ -15,22 +16,27 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /*
- * pointer.js is imported with its modification time in the specifier. A plugin
- * module is cached for the life of the Host process, so a development row
+ * Sibling modules are imported with their modification time in the specifier. A
+ * plugin module is cached for the life of the Host process, so a development row
  * (`file:///…/host.js?v=N`) reloads host.js but would keep serving the *old*
- * pointer.js from that cache — a stale-module trap whose only symptom is an odd
- * error later on. Stamping the URL means a changed pointer.js is picked up
- * whenever host.js is reloaded; in an installed bundle the stamp is stable, so
- * the module is still loaded exactly once.
+ * pointer.js or overlay.js from that cache — a stale-module trap whose only
+ * symptom is an odd error later on. Stamping the URL means a changed sibling is
+ * picked up whenever host.js is reloaded; in an installed bundle the stamp is
+ * stable, so each module is still loaded exactly once.
  */
-const pointerUrl = new URL('./pointer.js', import.meta.url)
-let pointerStamp = ''
-try {
-  pointerStamp = `?mtime=${Math.round(statSync(fileURLToPath(pointerUrl)).mtimeMs)}`
-} catch {
-  /* fall through to the plain specifier */
+async function importSibling(specifier) {
+  const url = new URL(specifier, import.meta.url)
+  let stamp = ''
+  try {
+    stamp = `?mtime=${Math.round(statSync(fileURLToPath(url)).mtimeMs)}`
+  } catch {
+    /* fall through to the plain specifier */
+  }
+  return import(`${url.href}${stamp}`)
 }
-const { openVirtualPointer, probeVirtualPointer } = await import(`${pointerUrl.href}${pointerStamp}`)
+
+const { openVirtualPointer, probeVirtualPointer } = await importSibling('./pointer.js')
+const { drawGrid, MIN_GRID_STEP } = await importSibling('./overlay.js')
 
 export const name = 'dsh-wayland'
 export const inject = ['tools', 'webServer']
@@ -79,8 +85,8 @@ const DEFAULTS = {
 }
 
 /**
- * The external toolchain. The plugin itself is dependency-free JavaScript, so
- * every binary it runs comes from `config.binDir` or from PATH. Each entry says
+ * The external toolchain. The plugin ships no binaries of its own, so every
+ * binary it runs comes from `config.binDir` or from PATH. Each entry says
  * what the binary is for, because that purpose is what a missing dependency
  * report has to tell a model (and a person) to be actionable.
  */
@@ -901,10 +907,14 @@ function createManager(ctx, cfg) {
 
   /* ------------------------------------------------------------ pictures */
 
-  async function capture(session, { window: win, scale, quality, mediaType = 'image/jpeg' } = {}) {
-    /* grim treats -o (whole output) and -g (region) as mutually exclusive. */
+  async function capture(session, { window: win, region, scale, quality, mediaType = 'image/jpeg' } = {}) {
+    /* grim treats -o (whole output) and -g (region) as mutually exclusive, so a
+       capture is one of three things: a caller-given rectangle, a window, or the
+       whole output. */
     const args = []
-    if (win && win.rect) {
+    if (region) {
+      args.push('-g', `${region.x},${region.y} ${region.width}x${region.height}`)
+    } else if (win && win.rect) {
       const r = win.rect
       args.push('-g', `${r.x},${r.y} ${r.width}x${r.height}`)
     } else {
@@ -915,7 +925,11 @@ function createManager(ctx, cfg) {
     } else {
       args.push('-t', 'png')
     }
-    if (scale && scale !== 1) args.push('-s', String(scale))
+    /* Always state the scale instead of leaving it to grim, whose default is the
+       output's own scale factor. Passed explicitly, the number this function is
+       told is the number the image really is, which is what the caller's
+       coordinate arithmetic depends on. */
+    if (Number.isFinite(scale) && scale > 0) args.push('-s', String(scale))
     /* `-c` asks for the pointer in the frame (ext-image-copy-capture's
        PAINT_CURSORS). It is not cosmetic: on a headless output wlroots keeps the
        cursor as a *hardware* cursor, which that backend never composites, so
@@ -1374,6 +1388,35 @@ function createManager(ctx, cfg) {
 
   /* ------------------------------------------------------------- output */
 
+  /**
+   * The rectangle one capture covers, in session pixels: the caller's region
+   * when it gave one, else the window, else the whole output.
+   *
+   * A region is clipped to the screen rather than rejected — asking for a
+   * rectangle that hangs off the edge is a normal way to say "from here to the
+   * corner", and grim's behaviour for an out-of-bounds rectangle is not worth
+   * depending on. `screenshot` re-measures the result against the pixels it
+   * actually got, so clipping here can never shift a grid label.
+   */
+  function captureArea(session, win, requested) {
+    if (requested === undefined || requested === null) {
+      return win ? { ...win.rect } : { x: 0, y: 0, width: session.width, height: session.height }
+    }
+    const values = ['x', 'y', 'width', 'height'].map((key) => Number(requested[key]))
+    if (!values.every((value) => Number.isFinite(value))) {
+      throw new Error('region needs numeric x, y, width and height, in session pixels')
+    }
+    const [rx, ry, rw, rh] = values.map((value) => Math.round(value))
+    const x = Math.max(0, Math.min(session.width - 1, rx))
+    const y = Math.max(0, Math.min(session.height - 1, ry))
+    return {
+      x,
+      y,
+      width: Math.max(1, Math.min(session.width - x, rw)),
+      height: Math.max(1, Math.min(session.height - y, rh)),
+    }
+  }
+
   async function screenshot(id, options = {}) {
     const session = require(id)
     let win = null
@@ -1381,21 +1424,49 @@ function createManager(ctx, cfg) {
       win = (await windows(id)).find((w) => w.id === options.window) ?? null
       if (!win) throw new Error(`no window with id ${options.window} in session ${id}`)
     }
-    const mediaType = options.mediaType === 'image/png' ? 'image/png' : 'image/jpeg'
-    const data = await capture(session, {
+    const scale = Number.isFinite(options.scale) && options.scale > 0 ? options.scale : 1
+    const regionGiven = options.region !== undefined && options.region !== null
+    const area = captureArea(session, win, regionGiven ? options.region : null)
+    let step = null
+    if (options.grid !== undefined && options.grid !== null) {
+      step = Number(options.grid)
+      if (!Number.isFinite(step) || step < MIN_GRID_STEP) {
+        throw new Error(`grid needs a step of at least ${MIN_GRID_STEP} session pixels`)
+      }
+    }
+    /* A grid is drawn into the pixels, so it pins the capture to PNG whatever
+       this deployment prefers for plain screenshots. */
+    const mediaType = step !== null || options.mediaType === 'image/png' ? 'image/png' : 'image/jpeg'
+    let data = await capture(session, {
       window: win,
-      scale: options.scale,
+      region: regionGiven ? area : undefined,
+      scale,
       quality: options.quality,
       mediaType,
     })
+    let width = area.width
+    let height = area.height
+    if (step !== null) {
+      const drawn = drawGrid(data, { originX: area.x, originY: area.y, scale, step })
+      data = drawn.data
+      /* Trust the pixels that came back over the rectangle that was asked for:
+         the labels are placed against the real width, so a clipped region still
+         labels every rule correctly. */
+      width = Math.round(drawn.width / scale)
+      height = Math.round(drawn.height / scale)
+    }
     const result = {
       session: session.id,
       mediaType,
       bytes: data.length,
-      width: win ? win.rect.width : session.width,
-      height: win ? win.rect.height : session.height,
+      width,
+      height,
+      origin: [area.x, area.y],
+      scale,
     }
-    if (win) result.window = { id: win.id, appId: win.appId, title: win.title, rect: win.rect }
+    if (step !== null) result.grid = step
+    /* Only claim a window when the window *was* the capture: a region overrides it. */
+    if (win && !regionGiven) result.window = { id: win.id, appId: win.appId, title: win.title, rect: win.rect }
     const attachments = ctx.get('attachments')
     if (attachments?.saveImage) {
       try {
@@ -1646,6 +1717,13 @@ function registerTools(ctx, manager, cfg) {
   }
   const out = (schema) => stripStrict(specToJsonSchema({ type: 'object', ...schema }))
   const sessionParam = { type: 'string', description: 'Session id from wayland_session_list or wayland_session_create.' }
+  /* One line describing a capture, shared by the tool's own render and the copy
+     projected into later context, so the two can never drift apart. */
+  const shotSummary = (value, suffix = '') => {
+    const zoom = value.scale === 1 ? '' : `, scale ${value.scale}`
+    const grid = value.grid ? `, grid ${value.grid}` : ''
+    return `Screenshot of ${value.session} (${value.width}x${value.height} at ${value.origin?.[0] ?? 0},${value.origin?.[1] ?? 0}${zoom}${grid}, ${Math.round(value.bytes / 1024)} KiB${suffix})`
+  }
 
   ctx.tools.register({
     name: 'wayland_session_create',
@@ -1914,12 +1992,23 @@ function registerTools(ctx, manager, cfg) {
 
   ctx.tools.register({
     name: 'wayland_screenshot',
-    description: 'Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. At the default scale the image is session pixels, so what you see is where pointer actions land. The pointer is drawn at its current position; wayland_check reports the cursor theme in use. Errors if window is not currently mapped.',
+    description: 'Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. At the default scale the image is session pixels, so what you see is where pointer actions land; `origin` and `scale` carry the mapping back to input coordinates. Capture one `region` instead of the whole screen to spend less on the image and read a small area at full resolution. Pass `grid` when you need to know *where* something is: it prints the session coordinates onto the picture. The pointer is drawn at its current position; wayland_check reports the cursor theme in use. Errors if window is not currently mapped.',
     parameters: json({
       properties: {
         session: { ...sessionParam, required: true },
         window: { type: 'integer', description: 'Window id from wayland_windows; omit to capture the whole screen.' },
-        scale: { type: 'number', description: 'Size multiplier: 1 captures native pixels, 0.5 halves both dimensions. Coordinates in the returned image are session pixels divided by scale, so multiply by 1/scale to get the x/y wayland_input wants.' },
+        region: {
+          type: 'object',
+          description: 'Area to capture, in absolute session pixels. Overrides `window`. A region running past the screen edge is clipped, not rejected.',
+          properties: {
+            x: { type: 'integer', required: true, description: 'Left edge in session pixels.' },
+            y: { type: 'integer', required: true, description: 'Top edge in session pixels.' },
+            width: { type: 'integer', required: true, description: 'Width in session pixels.' },
+            height: { type: 'integer', required: true, description: 'Height in session pixels.' },
+          },
+        },
+        grid: { type: 'number', description: `Draw a coordinate grid with a rule every N session pixels, each rule labelled with the session coordinate it sits on — x values along the top edge, y values down the left edge. Read the label and pass that number straight to wayland_input: no arithmetic, and no estimating a position from a picture. The label is always the coordinate wayland_input takes even when the capture is magnified, because the rules are drawn after scaling. Minimum ${MIN_GRID_STEP}; 50 or 100 is usually right. Forces a PNG capture.` },
+        scale: { type: 'number', description: 'Size multiplier: 1 captures native pixels (one image pixel per session pixel), 2 doubles both dimensions so small text becomes legible, 0.5 halves them. The image is session pixels × scale.' },
       },
       required: ['session'],
     }),
@@ -1929,18 +2018,18 @@ function registerTools(ctx, manager, cfg) {
           session: { type: 'string', required: true },
           mediaType: { type: 'string', required: true },
           bytes: { type: 'integer', required: true },
-          width: { type: 'integer', required: true, description: 'Width of the captured area in session pixels (the image itself is scale × smaller).' },
-          height: { type: 'integer', required: true, description: 'Height of the captured area in session pixels (the image itself is scale × smaller).' },
+          width: { type: 'integer', required: true, description: 'Width of the captured area in session pixels; the image itself is scale × wider.' },
+          height: { type: 'integer', required: true, description: 'Height of the captured area in session pixels; the image itself is scale × taller.' },
+          origin: { type: 'array', required: true, items: { type: 'integer' }, description: 'Session-pixel [x, y] of the image\'s top-left corner: session = origin + image pixel / scale.' },
+          scale: { type: 'number', required: true, description: 'Image pixels per session pixel in this capture.' },
+          grid: { type: 'number', description: 'Grid pitch in session pixels, when a grid was drawn.' },
           path: { type: 'string' },
           window: { type: 'object', description: 'The captured window, when a window was requested.' },
           attachment: { type: 'object', description: 'Durable image reference, rendered with this result.' },
         },
       }),
       render: (args, value) => {
-        const blocks = toolText(
-          `Screenshot of ${value.session} (${value.width}x${value.height}, ${Math.round(value.bytes / 1024)} KiB${value.path ? `, ${value.path}` : ''})`,
-          args.window ? [`window #${args.window}`] : [],
-        )
+        const blocks = toolText(shotSummary(value, value.path ? `, ${value.path}` : ''), args.window ? [`window #${args.window}`] : [])
         const attachment = (value && value.attachment) || null
         if (attachment) blocks.push({ type: 'image', attachment })
         return blocks
@@ -1953,6 +2042,8 @@ function registerTools(ctx, manager, cfg) {
          stray mediaType/quality in args cannot leak into the capture. */
       const shot = await manager.screenshot(args.session, {
         window: args.window,
+        region: args.region,
+        grid: args.grid,
         scale: args.scale,
         mediaType: cfg.screenshotMediaType === 'image/jpeg' ? 'image/jpeg' : 'image/png',
         quality: cfg.screenshotQuality,
@@ -1965,7 +2056,7 @@ function registerTools(ctx, manager, cfg) {
       const value = result?.value
       if (!value || !value.attachment) return undefined
       return [
-        { type: 'text', text: `Screenshot of ${value.session} (${value.width}x${value.height})` },
+        { type: 'text', text: shotSummary(value) },
         { type: 'image', attachment: value.attachment },
       ]
     },

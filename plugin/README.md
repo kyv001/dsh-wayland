@@ -16,9 +16,12 @@ sidebar, with agent tools to drive them.
 
 ## Runtime dependencies
 
-The plugin is dependency-free JavaScript (node builtins only), and the published
-package ships **no** binaries: everything it runs comes from the host machine,
-resolved through `config.binDir` first and then `PATH`.
+The plugin's JavaScript has exactly one npm dependency — `pngjs`, used only by
+[`overlay.js`](overlay.js) to decode and re-encode a capture before the coordinate
+grid is burned into it. Every other module (`host.js`, `pointer.js`, `client.js`)
+is node builtins only, and the published package ships **no** binaries: everything
+it runs comes from the host machine, resolved through `config.binDir` first and
+then `PATH`.
 
 | Binary | Required | Used for |
 |---|---|---|
@@ -175,7 +178,7 @@ The HUD reads `● 19.9 fps · 32 ms · 229 KB · 1600x1000`, switches to
 | `liveQuality` | `82` | panel JPEG quality (used when `liveMediaType` is jpeg) |
 | `liveMediaType` | `image/jpeg` | panel frame format: `image/jpeg` or `image/png` |
 | `streamFps` / `streamScale` / `streamQuality` | `10` / `0.6` / `70` | the standalone MJPEG `/stream` endpoint |
-| `screenshotMediaType` | `image/png` | what `wayland_screenshot` captures: `image/png` or `image/jpeg`. A deployment setting — the tool exposes no format parameter |
+| `screenshotMediaType` | `image/png` | what `wayland_screenshot` captures: `image/png` or `image/jpeg`. A deployment setting — the tool exposes no format parameter. A capture with a `grid` is always PNG, because the rules are drawn into the pixels |
 | `screenshotQuality` | `85` | JPEG quality for that capture, when the format above is jpeg |
 | `inputLeadMs` | `60` | how long the virtual keyboard waits for the client's focus handshake before its first key |
 | `inputKeyDelayMs` | `20` | gap between keystrokes when typing text |
@@ -194,8 +197,40 @@ The HUD reads `● 19.9 fps · 32 ms · 229 KB · 1600x1000`, switches to
 | `wayland_session_close` | stop the session and every program in it |
 | `wayland_launch` | start a program inside the session; returns pid, an `outcome` (`window` / `exited` / `timeout` / `skipped`), the exit code when it ended, and the session log. `window` means a window belonging to the program — including one of a process it started (`flatpak run` becomes bwrap becomes the app), or the single window this call added when a launcher hands off outside its process tree |
 | `wayland_windows` | mapped windows: id, app id, title, pid, absolute rect |
-| `wayland_screenshot` | capture output or window, returns the image |
+| `wayland_screenshot` | capture the output, a window, or a `region` of session pixels; optional `grid` burns in a coordinate ruler and optional `scale` magnifies. Returns the image plus `origin` / `scale` / `width` / `height` |
 | `wayland_input` | ordered directives: primitives `move` / `press` / `release` / `scroll` / `wait` / `raise`, sugars `click` / `drag` / `type` / `key` |
+
+## Screenshots and coordinates
+
+`wayland_screenshot` returns the image together with the numbers needed to map
+between picture and screen:
+
+    session coordinate = origin + image pixel / scale
+
+| Parameter | Effect |
+|---|---|
+| `window` | capture one mapped window's rectangle |
+| `region` | capture an arbitrary rectangle in absolute session pixels; overrides `window`. A rectangle running past the screen edge is clipped, not refused |
+| `scale` | image pixels per session pixel. `2` doubles both dimensions, so small text becomes legible |
+| `grid` | draw a ruler every N session pixels, each rule labelled with the session coordinate it sits on — x values along the top edge, y values down the left edge |
+
+`grid` exists to remove a guess. A screenshot is a picture of a screen, and
+estimating where a cell or a button sits inside it is a guess that costs a whole
+round trip when it is wrong; reading a number off a printed rule is a lookup. The
+labelled value is always the coordinate `wayland_input` takes — magnified or not —
+because the rules are drawn *after* scaling: the picture is enlarged first, so the
+rules stay one crisp line (widened by the scale) instead of being blown up with it.
+
+Drawing needs pixels, so [`overlay.js`](overlay.js) decodes the capture with
+`pngjs` — the one npm dependency, deliberately confined to that file — draws the
+rules and their labels from a 5×7 bitmap font, and re-encodes it. It replaced a
+hand-written codec that covered only grim's 8-bit RGB/RGBA; `pngjs` decodes those
+byte-identically (checked against Pillow as an independent oracle) and also takes
+palette, 16-bit and interlaced input, at the cost of a slower encode and the
+benefit of a roughly 40% smaller file. A capture with a `grid` is therefore always
+PNG, whatever `screenshotMediaType` says: better a format change than an image the
+caller believes is labelled. Grid *detection* is deliberately not implemented —
+recognising "there is a table here" is an image-analysis job, not a screenshot one.
 
 ## Input injection
 
