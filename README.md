@@ -17,7 +17,7 @@
 | 安装形态 | 作为普通 bundle 装进本机 DSH profile（未发布 npm，所以是 `link:<仓库>/plugin` + `dsh.profile.bundles` 里的一行，`node_modules/dsh-wayland` 是指向仓库的软链），Plugin Manager 中 enabled；profile patch 里只有一条 `- id: dsh-wayland / disabled: false`，没有任何机器路径 |
 | 依赖 | 本体零 npm 依赖；外部**必需** `sway`/`swaymsg`/`grim`/`wtype`，`wlrctl` 降为**可选**（只在合成器没有虚拟指针协议时兜底）；按 `binDir` → `PATH` 解析；**指针注入默认不用任何外部二进制**——插件自己维持一个会话级虚拟指针（见 §3.3）；**仓库里不含工具链、不含发行版或包管理器配方**；缺依赖不崩，工具与面板都会报缺哪几个、各自干什么、怎么装（见 §3.6） |
 | 依赖现状 | **本机（当前系统配置）工具链已就绪**：PATH 上有 `sway`/`swaymsg`/`grim`/`wtype`/`wlrctl`（实测解析到 `/etc/profiles/per-user/kyv/bin/*`），没有配 `binDir`；可选缺 `wayvnc`/`wf-recorder`/`xterm`。插件 `ready`，8 个工具与面板取帧都可用（§9 有本轮实测记录） |
-| 工具 | 7 个：`wayland_session_create / _list / _close / launch / windows / screenshot / input`。端到端实测跑通（含图像返回）；工具链就绪时 7 个全部可用，`wayland_session_list` 兼作依赖体检，缺依赖时其余工具按 §3.6 报缺什么 |
+| 工具 | 8 个：`wayland_session_create / _list / _check / _close / launch / windows / screenshot / input`。端到端实测跑通（含图像返回）；工具链就绪时 8 个全部可用，`wayland_check` 兼作依赖与光标主题体检，缺依赖时其余工具按 §3.6 报缺什么 |
 | 面板 | 右栏 `wayland` tab：字号跟随侧栏（14px）、en/zh 双语（跟随 DSH 的语言设置）、每个控件都有悬停说明、**没有 Live/Crisp 切换**（帧格式由 `liveMediaType` 决定）。帧/HUD/输入回传已由用户目视确认；工具链就绪时面板显示实时画面（注册状态已用 Client inspect 在实时页面核对，像素仍由用户目视） |
 | 实时性 | 默认 Live = JPEG 1:1 q82 @ **20 fps**；本机实测面板循环 19.9 fps、最差帧 46ms、不设限上限 ~31 fps |
 | 鉴权 | token 持久化在 `<sessionRoot>/token`（0600），跨插件重载稳定；错误 token 仍 403 |
@@ -51,9 +51,10 @@ docs/
   check-identity.mjs    离线校验：包名 / client.js 注册 id / patch 行名三处一致，且包可发布
   check-degraded.mjs    离线校验：工具链全缺 / 部分缺 / 齐全三种情况下的降级与报告，以及 `wayland_check` 的自检形状（含"什么都没解析出来时不许报 ok"）
   check-panel.mjs       离线校验：用迷你 React 把面板组件树渲染出来，断言中英双语与字典键齐平、**悬停说明可达**、**跟随宿主字号**、locale 迟挂载、字典被拒/注册抛错都不致命、无 Live/Crisp；`DSH_WAYLAND_CLIENT=<file>` 可改测服务端实际提供的那份字节
-  check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手、报文与**只读能力探测**（不建设备）
+  check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手、报文与**只读能力探测**（不建设备）——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
   check-input.mjs       离线校验：`wayland_input` 的 10 个变体（required/properties 逐条钉死）与 9 条报错文案，并断言"校验先于会话查找"
-  check-launch.mjs      离线校验：`wayland_launch` 的结果契约——四种 outcome 必须渲染成四句不同的话（exited 点名退出码与日志、timeout 说明进程还在跑），"没有 shell" 只写在 `command` 参数上——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
+  check-launch.mjs      离线校验：`wayland_launch` 的结果契约——四种 outcome 必须渲染成四句不同的话（exited 点名退出码与日志、timeout 说明进程还在跑），"没有 shell" 只写在 `command` 参数上
+  check-cursor.mjs      离线校验：光标主题——配置的主题与尺寸写进生成的 sway.conf、装不上的主题要如实报 warn（并说明会退回 sway 自带光标）、自动探测结果与配置文件必须一致、`wayland_check` 带 cursor 行、截图描述写明指针就在图里
   render-tools.mjs      重新渲染 docs/tool-definitions.md
 ```
 
@@ -112,6 +113,26 @@ docs/
 - 合成器没有 `zwlr_virtual_pointer_manager_v1` 时（sway/wlroots 一直提供）降级顺序是
   `swaymsg seat <seat> cursor set` 绝对挪光标 → 相对 `wlrctl`；这条降级路径下 click 仍可能
   丢，属于已知限制（见 §10）。
+
+**截图里的指针**（本轮加的；三条都是实测，不是推断）：
+
+- **必须带 `-c`。** grim 的 `-c` 就是新协议的 `PAINT_CURSORS`，wlroots 收到后
+  `wlr_output_lock_software_cursors()` 把这一帧强制改为软件光标。headless 输出平时挂着一个
+  **硬件光标**（`sway -d` 日志：`Enabling hardware cursors on output 'HEADLESS-1' (locks: 0)`），
+  而后端根本没有平面去合成它——所以**不带 `-c` 时指针永远不会出现在抓帧里**，换哪个主题都一样。
+  实测：只给旧代码加 `-c`（其余不变），两个不同指针位置的截图从**逐字节相同**变成各自在指针处
+  出现精灵；代价 800x600 JPEG q82 从 15.29 ms/张变成 15.99 ms/张（+0.7 ms，20 fps 预算 50 ms）。
+- **指针设备必须存在。** sway 只在 seat 拿到指针能力那一刻加载光标图形，而能力来自指针设备；
+  所以会话**创建时**就连上持久虚拟指针（而不是等第一次 `wayland_input`），否则"还没有任何输入"
+  的会话抓帧里 0 个指针像素。实测：创建后立刻截图，指针在停放点（会话中心 300,200）出现，
+  228 个非背景像素、bbox (298,198)-(312,220)；`wayland_input` move 到 (120,300) 后精灵跟过去，
+  旧位置不留残影；窗口裁剪 `-g` 路径同样含指针（两次不同位置的窗口截图差异覆盖两处）。
+- **主题只决定"画成什么样"。** 生成的 sway.conf 里写 `seat * xcursor_theme <theme> <size>`
+  （`cursorTheme` 显式指定，空则自动探测本机第一个真带 `cursors/left_ptr` 的主题）；一个都找不到
+  时 wlroots 有自己的内建 fallback（`wlr_xcursor_theme_load`：`cursor_count == 0` 时
+  `load_default_theme`），所以退化成"较小的自带箭头"，**不是没有指针**——`wayland_check` 的
+  cursor 行就是照这个口径写的。停放点的选择同理：`session.pointer` 以前一直记 (0,0)，而合成器
+  实际在输出中心，创建时显式 move 到中心后，记账和图里的精灵才对得上。
 
 ### 3.4 鉴权
 
@@ -268,7 +289,7 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9382 字符 schema ≈ 2.3k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低）。
+从代码渲染）。合计 9509 字符 schema ≈ 2.3k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
 （指针动作返回时合成器已处理）都写在模型要读的那段里；**失败方式不写进描述，由报错本身说**
 （关一个已关闭的 id 会报错；非法载荷在发出任何事件前就被拒掉，报错点名第几条、哪个字段；
@@ -343,6 +364,9 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
 | `streamFps` / `streamScale` / `streamQuality` | `10` / `0.6` / `70` | 独立 MJPEG `/stream` 接口 |
 | `screenshotMediaType` | `image/png` | 模型工具截图用哪种格式（`image/png` / `image/jpeg`）。**不是工具参数**：模型不选格式，部署者选 |
 | `screenshotQuality` | `85` | 上面选成 `image/jpeg` 时的质量。同样只是部署项 |
+| `inputLeadMs` / `inputKeyDelayMs` | `60` / `20` | 虚拟键盘等首次按键前的焦点握手时间、逐键间隔 |
+| `cursorTheme` | `''`（自动探测） | 指针图形用哪个 xcursor 主题。空 = 取本机第一个真的带 `cursors/left_ptr` 的主题；一个都找不到时 sway 用自带的较小 fallback 光标 |
+| `cursorSize` | `24` | 指针图形像素尺寸（8–512） |
 | `maxSessions` | `6` | 并发会话上限 |
 | `defaultApp` | `foot` | 面板 "New" 按钮启动的程序 |
 
@@ -468,6 +492,23 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   `.probe/check-input.mjs` 相应去掉"描述里必须出现 `validated before`"这条**散文断言**——失败语义改由
   行为断言钉（每条拒绝都带 action 序号/指令/字段，合法载荷必须越过校验），脚本注释里写明这个分工。
   schema 9598 → 9382。
+- 本轮（光标可见）：三处改动加一个离线校验。`capture()` 加 `grim -c`；会话创建时就连上持久虚拟指针
+  并把它停在会话中心；生成 sway.conf 时写 `seat * xcursor_theme <theme> <size>`（`cursorTheme`/
+  `cursorSize`，空则自动探测）；`wayland_check` 多一行 `cursor`；`wayland_screenshot` 描述加一句
+  "指针就在图里"。schema 9382 → 9509。
+  **实测（本轮踩的关键坑）**：一开始用"`grim` 与 `grim -c` 在同一指针位置是否逐字节相同"来判断有没有
+  指针——**这个判据是错的**：两者都含指针时当然相同。正确判据是在两个指针位置各抓一帧看差异，或数
+  指针处的像素。改判据后拿到的真实结论是：旧代码两个位置的抓帧**逐字节相同（没有指针）**，只给它加
+  `-c` 就各自出现精灵（209 px），headless 后端平时挂着硬件光标、根本不合成进输出缓冲（`sway -d` 日志
+  `Enabling hardware cursors on output 'HEADLESS-1' (locks: 0)` ↔ 抓帧时的 `Disabling … (locks: 1)`）。
+  另外纠正了上一版文档/断言里"没有主题就没有指针"的说法：wlroots 在主题加载不到时会用内建 fallback
+  （`load_default_theme`），实测无主题、无 `XCURSOR_PATH` 时仍画出 40 px 的小箭头——所以 cursor 行
+  写的是"退回 sway 自带光标"，不是"没有指针"。新代码实测：创建后未做任何输入，第一帧就在中心
+  (300,200) 画出 228 个非背景像素的精灵，move 后跟到新位置且旧位无残影，窗口裁剪路径同样含指针；
+  面板那条 `/frame`（JPEG、0.6 缩放，即右栏实时画面走的路）同样含指针：两个指针位置各取一帧，
+  精灵出现在各自位置、旧位置没有。`-c` 的代价 15.29 → 15.99 ms/张（800x600 JPEG q82）。离线部分
+  交给新的 `.probe/check-cursor.mjs`（假 sway + 假工具链：主题/尺寸落进 sway.conf、装不上的主题报
+  warn 且措辞提到 fallback、自动探测与配置文件一致、cursor 行与截图描述都在）。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；
@@ -583,7 +624,11 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
 - **指针降级路径的 click 仍可能丢**：合成器没有 `zwlr_virtual_pointer_manager_v1` 时，插件退回
   `swaymsg seat … cursor set` + `wlrctl`，而 `wlrctl` 每次新建/销毁虚拟指针正是 §3.3 里那个
   丢 click 的形态——所以那时只能保证移动与键盘，click 不可靠（sway/wlroots 一直提供该协议，
-  本机不受影响）。
+  本机不受影响）。同一情形下截图里也不会有指针：没有指针设备就没有光标图形。
+- **指针图形取决于机器上装了哪些 xcursor 主题**：`cursorTheme` 为空时只按 `XCURSOR_PATH` 与常见
+  icons 目录探测"第一个真的带 `cursors/left_ptr` 的主题"；一个都没有时用 wlroots 内建的 fallback
+  箭头（较小，实测 10x16，本机 40 个非背景像素）。`wayland_check` 的 cursor 行会说明到底用的哪一个，
+  但检验不了那个主题画出来好不好看。
 - **长按现在能做了**（原限制已解除）：`wayland_input` 有 `press`/`release` 两个原语，会话级持久
   虚拟指针跨调用保持按键状态，所以"按住 >0.45 秒"（原扫雷用例）与 `drag` 都能直接表达。**键盘
   仍然不能按住**：`wtype` 每次调用都新建并销毁一个虚拟键盘，键位状态不跨调用（与 §3.3 里
@@ -624,7 +669,8 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
    探测逻辑或降级文案必跑）、`.probe/check-panel.mjs`（改面板 UI/文案/控件必跑）、
    `.probe/check-pointer.mjs`（改 `pointer.js` 或指针注入路径必跑）、`.probe/check-input.mjs`
    （改 `wayland_input` 的指令表/校验必跑）、`.probe/check-launch.mjs`（改 `wayland_launch` 的
-   结果字段或渲染必跑）。
+   结果字段或渲染必跑）、`.probe/check-cursor.mjs`（改光标主题解析、生成的 sway.conf 或
+   `wayland_check` 的 cursor 行必跑）。
 3. （只有开发这个插件时才做）在 profile 里加开发行并**换 id + 换 `?v=N`**，同时确认 bundle 行是
    `disabled: true`（否则开发行会被挡住，见 §3.5）。普通用户跳过这一步。
 4. 重载会杀掉所有会话 → 重新建会话；若只改了 `client.js`，**重挂一次插件行再刷新页面**

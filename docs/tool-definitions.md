@@ -5,7 +5,7 @@ the live definitions, not hand-copied). Descriptions carry the purpose, when to
 use the tool, and what it returns; defaults, units and id provenance live on the
 parameters they belong to.
 
-8 tools, 9382 characters of schema in total.
+8 tools, 9509 characters of schema in total.
 
 ## `wayland_session_create`
 
@@ -25,7 +25,7 @@ List the virtual desktops that exist right now — id, name, size, how many prog
 
 ## `wayland_check`
 
-Check this plugin's health: the toolchain, whether those binaries actually run, whether the session root is writable, and a health line per live session. Run it once before you start using the wayland_* tools, and again when one reports missing dependencies or a session misbehaves. Always succeeds and changes nothing.
+Check this plugin's health: the toolchain, whether those binaries actually run, whether the session root is writable, whether a cursor theme was found, and a health line per live session. Run it once before you start using the wayland_* tools, and again when one reports missing dependencies or a session misbehaves. Always succeeds and changes nothing.
 
 *No parameters.*
 
@@ -61,7 +61,7 @@ List the windows currently mapped on a virtual desktop: window id, app id (or X1
 
 ## `wayland_screenshot`
 
-Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. At the default scale the image is session pixels, so what you see is where pointer actions land. Errors if window is not currently mapped.
+Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. At the default scale the image is session pixels, so what you see is where pointer actions land. The pointer is drawn at its current position; wayland_check reports the cursor theme in use. Errors if window is not currently mapped.
 
 | parameter | type | required | description |
 |---|---|---|---|

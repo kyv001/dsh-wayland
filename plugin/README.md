@@ -179,6 +179,8 @@ The HUD reads `● 19.9 fps · 32 ms · 229 KB · 1600x1000`, switches to
 | `screenshotQuality` | `85` | JPEG quality for that capture, when the format above is jpeg |
 | `inputLeadMs` | `60` | how long the virtual keyboard waits for the client's focus handshake before its first key |
 | `inputKeyDelayMs` | `20` | gap between keystrokes when typing text |
+| `cursorTheme` | `''` (detect) | xcursor theme the pointer sprite is drawn from. Empty takes the first installed theme that ships `cursors/left_ptr`; sway falls back to its own smaller built-in cursor when nothing is found |
+| `cursorSize` | `24` | pointer sprite size in pixels, clamped to 8–512 |
 | `maxSessions` | `6` | concurrent sessions |
 | `defaultApp` | `foot` | program the sidebar's *New* button starts |
 
@@ -188,7 +190,7 @@ The HUD reads `● 19.9 fps · 32 ms · 229 KB · 1600x1000`, switches to
 |---|---|
 | `wayland_session_create` | start a session (optional name/size), returns its id |
 | `wayland_session_list` | live sessions: id, name, size, programs started, whether the compositor is still alive |
-| `wayland_check` | plugin health: the toolchain report (what resolved, what is missing, how to fix), whether those binaries actually run, whether the session root is writable, and one health line per live session — always succeeds |
+| `wayland_check` | plugin health: the toolchain report (what resolved, what is missing, how to fix), whether those binaries actually run, whether the session root is writable, whether a cursor theme was found, and one health line per live session — always succeeds |
 | `wayland_session_close` | stop the session and every program in it |
 | `wayland_launch` | start a program inside the session; returns pid, an `outcome` (`window` / `exited` / `timeout` / `skipped`), the exit code when it ended, and the session log |
 | `wayland_windows` | mapped windows: id, app id, title, pid, absolute rect |
