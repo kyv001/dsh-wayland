@@ -7,9 +7,9 @@
  * pins the wording of each one without needing a compositor:
  *
  *   - the schema declares `outcome` as required with exactly four values
- *   - the "no shell" rule lives on the `command` parameter (where it belongs), while
- *     the description states the shell *route*: a terminal inside the session, with
- *     the warning that a terminal's output stays on screen instead of the log
+ *   - the shell story is told exactly once: the description names the route (the
+ *     bash tool, or a terminal inside the session) and warns that a terminal keeps
+ *     its output on screen, so the `command` parameter must not restate the rule
  *   - `env` states its shape, the merge, and the DISPLAY rule
  *   - every outcome renders a different, actionable line, and `exited` names the
  *     exit code and the log the output went to
@@ -55,14 +55,14 @@ for (const name of ['pid', 'command', 'outcome', 'log']) {
 check(tool.output?.schema?.properties?.exitCode !== undefined, 'exitCode must be part of the result')
 
 const params = tool.parameters?.properties ?? {}
-check(!/pipes, redirection|globbing|&&/.test(tool.description),
-  'the no-shell rule belongs on the command parameter, not repeated in the description')
-check(/without a shell/i.test(params.command?.description ?? ''),
-  'the command parameter must say it runs without a shell')
 check(/terminal/i.test(tool.description) && /bash/.test(tool.description),
-  'the description must state the terminal route for shell syntax')
+  'the description must state the shell route (the bash tool or a terminal in the session)')
 check(/stays on that screen|not in the session log/.test(tool.description),
-  'the terminal route must warn that its output does not reach the session log')
+  'the shell route must warn that a terminal keeps its output on screen')
+check(!/without a shell|globbing|redirection|&&/.test(params.command?.description ?? ''),
+  'the command parameter must not restate the shell rule: the route sentence already says it')
+check(!/e\.g\./i.test(params.command?.description ?? ''),
+  'the command parameter must not list example programs')
 check(/merged over/i.test(params.env?.description ?? '') && /DISPLAY/.test(params.env?.description ?? ''),
   'the env parameter must state the merge and the DISPLAY rule')
 check(/stringified|string/i.test(params.env?.description ?? ''),
@@ -98,4 +98,4 @@ if (failures.length > 0) {
   console.log(`launch check failed: ${failures.length} problem(s)`)
   process.exit(1)
 }
-console.log('launch check ok: four distinct outcomes, indexed result, shell rule on the parameter and the terminal route in the description')
+console.log('launch check ok: four distinct outcomes, indexed result, and the shell route told exactly once')

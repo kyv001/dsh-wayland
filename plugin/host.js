@@ -1440,7 +1440,7 @@ function registerTools(ctx, manager, cfg) {
     return result
   }
   const out = (schema) => stripStrict(specToJsonSchema({ type: 'object', ...schema }))
-  const sessionParam = { type: 'string', description: 'Session id from wayland_session_list (or the id returned by wayland_session_create).' }
+  const sessionParam = { type: 'string', description: 'Session id from wayland_session_list or wayland_session_create.' }
 
   ctx.tools.register({
     name: 'wayland_session_create',
@@ -1600,11 +1600,11 @@ function registerTools(ctx, manager, cfg) {
 
   ctx.tools.register({
     name: 'wayland_launch',
-    description: 'Run a program on a virtual desktop and return its pid plus what became of its window (`window`, `exited`, `timeout`, or `skipped` when wait was false). The program inherits that desktop\'s screen, clipboard and input, so it appears only there; its output goes to the session log, not this result. For shell syntax, use the bash tool — or a terminal inside the session: `command: "foot", args: ["-e", "bash", "-c", "…"]`, whose output stays on that screen (read it with wayland_screenshot) rather than in the session log. A GUI toolkit needs a second or two to draw, so give it a moment before screenshotting.',
+    description: 'Run a program on a virtual desktop and return its pid plus what became of its window (`window`, `exited`, `timeout`, or `skipped` when wait was false). Its output goes to the session log, not this result. For shell syntax, use the bash tool — or a terminal inside the session: `command: "foot", args: ["-e", "bash", "-c", "…"]`, whose output stays on that screen (read it with wayland_screenshot) rather than in the session log. A GUI toolkit needs a second or two to draw, so give it a moment before screenshotting.',
     parameters: json({
       properties: {
         session: { ...sessionParam, required: true },
-        command: { type: 'string', required: true, description: 'Executable to run: a name on PATH or an absolute path, e.g. "foot", "konsole", "firefox". Run directly, without a shell, so pipes, redirection, globbing and `&&` do not work.' },
+        command: { type: 'string', required: true, description: 'Executable to run: a name on PATH or an absolute path.' },
         args: { type: 'array', items: { type: 'string' }, description: 'Command-line arguments; each entry becomes one argv entry, exactly as given.' },
         env: { type: 'object', description: 'Extra environment variables as an object of names to values, merged over the session\'s own environment (values are stringified). DISPLAY comes from the session and cannot be overridden here.' },
         cwd: { type: 'string', description: 'Working directory (default: the DSH process\'s home directory).' },

@@ -268,7 +268,7 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9920 字符 schema ≈ 2.5k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 320 字符描述 —— 净 +105 字符）。
+从代码渲染）。合计 9598 字符 schema ≈ 2.4k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
 （指针动作返回时合成器已处理）、失败方式（关一个已关闭的 id 会报错；非法载荷在发出任何事件前
 就被拒掉，并点名第几条、哪个字段）都写在模型要读的那段里；实现支持但 schema 没声明的旋钮不留
@@ -448,6 +448,13 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   确实在会话里跑出了 `HI-FROM-SHELL`、用户能在右栏看到，但**终端把输出渲染在 PTY 屏幕上，`apps.log`
   里只有 foot 自己的一行 warning（83 B）**，所以要文本仍应走 bash 工具（或让 shell 自己重定向到文件）。
   这条实测边界写进了描述，免得模型以为能去日志里读终端输出。schema 9724 → 9920。
+- 再走一遍去重（四条反馈）：`The program inherits that desktop's screen, clipboard and input, so it appears
+  only there` 删掉（"在虚拟桌面上跑程序"已经含了这个意思）；五个工具共用的 `session` 参数缩成
+  `Session id from wayland_session_list or wayland_session_create.`（各省 21 字符）；既然描述里已经给了
+  "要 shell 就用 bash 工具或会话内终端"这条路，`command` 上那条 `Run directly, without a shell…` 就是
+  同一事实的第二遍，删掉；`"foot"/"konsole"/"firefox"` 这类"怎么写程序名"的示例也删。schema 9920 → 9598
+  （比拆分诊断前的 9644 还低）。`.probe/check-launch.mjs` 的断言改成钉新口径：shell 这件事只在描述里说
+  一次（路由 + 终端输出不进日志），`command` 参数里再出现规则或 `e.g.` 示例即失败。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；
