@@ -23,8 +23,8 @@
  *     then the config names it) or reports that same fallback warn — never a
  *     claim without the corresponding config line, and never a failure
  *   - `wayland_check` carries that verdict as a `cursor` line
- *   - the model-facing text says the pointer is in the image and where the theme
- *     verdict comes from
+ *   - the model-facing text says the pointer is in the image; where the theme
+ *     came from stays `wayland_check`'s business, not the capture tool's
  *
  * Run: node .probe/check-cursor.mjs
  */
@@ -142,11 +142,10 @@ process.env.PATH = ''
   const tools = mount({ binDir, sessionRoot })
   const screenshot = String(tools.get('wayland_screenshot').description)
   /* The sprite is in every capture now — the eager pointer device plus the
-     PAINT_CURSORS flag — so the model has to expect it, wherever the theme
-     comes from. */
+     PAINT_CURSORS flag — so the model has to expect it. Which theme it was drawn
+     from is `wayland_check`'s business, not the capture tool's. */
   check(/pointer is drawn at its current position/.test(screenshot),
     'the screenshot description must say the pointer is in the image')
-  check(/wayland_check/.test(screenshot), 'the screenshot description must say where the theme verdict comes from')
   const doctor = String(tools.get('wayland_check').description)
   check(/cursor theme/.test(doctor), 'wayland_check must list the cursor theme among what it checks')
 }
@@ -158,4 +157,4 @@ if (failures.length > 0) {
   console.log(`cursor check failed: ${failures.length} problem(s)`)
   process.exit(1)
 }
-console.log('cursor check ok: theme resolved once, written into sway.conf, reported by wayland_check, and told to the model')
+console.log('cursor check ok: theme resolved once, written into sway.conf, and reported by wayland_check')

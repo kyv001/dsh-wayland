@@ -346,9 +346,10 @@ palette / 隔行 / 16-bit 这三条上（`FAILURES=3`），新用例是能区分
 ## 5. 模型可见的工具
 
 8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 10824 字符 schema ≈ 2.6k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低，`region`/`grid` 那轮回涨约 1.3k 字符，见 §3.8）。
-措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
-（指针动作返回时合成器已处理）都写在模型要读的那段里；**失败方式不写进描述，由报错本身说**
+从代码渲染）。合计 10156 字符 schema ≈ 2.4k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：每个工具的描述只讲一件事；后续几轮去重把总量压到比拆分前还低，`region`/`grid` 那轮回涨约 1.3k 字符，本轮再删掉与参数重复、调用结果自己会说的、替模型做决定的、以及跟本工具无关的跨工具指路，收回 668 字符，见 §3.8）。
+措辞原则：**描述必须与实现逐条对得上**，但同一个事实只说一次——坐标系换算（`scale` 改变像素↔
+坐标）挂在 `scale` 参数与 `origin` 输出字段上，返回时机（指针动作返回时合成器已处理）写在
+`wayland_input` 里，截图描述不重复；**失败方式不写进描述，由报错本身说**
 （关一个已关闭的 id 会报错；非法载荷在发出任何事件前就被拒掉，报错点名第几条、哪个字段；
 跑一半失败则回报已应用了几条）；实现支持但 schema 没声明的旋钮不留
 （曾经的 `delayMs`/`waitMs` 要么声明要么删掉；截图格式/质量、键盘前导与逐键间隔统统下沉到部署配置）。
@@ -536,7 +537,8 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   `right now` 与 `never cached` 是同一事实（合并成 "grabbed during this call"）、报错句收紧为
   "Errors if window is not currently mapped."。保留了 "At the default scale … where pointer actions land"：
   它讲的是**默认路径**上的跨工具契约（截图坐标 = `wayland_input` 的 x/y），而 `scale` 参数那句是从换算角度说的。
-  schema 总量 9852 → 9644。
+  schema 总量 9852 → 9644。（**后来推翻了**：`grid` 把会话坐标直接印进图里之后，模型不必再为拿指针坐标
+  自己做换算，这句连同 `origin`/`scale` 那句话一起删了；换算公式仍在 `scale` 参数与 `origin` 输出字段上，见 §5。）
 - 接着把**诊断从各工具里剥出来**，做成第 8 个工具 `wayland_check`：`wayland_session_list` 只列会话，
   `wayland_session_create` 不再提依赖报告，失败信息仍然就是那份报告（`dependencyError()` 在报告末尾
   加一句指路）。理由是两件事的生命周期无关——"有哪些桌面" vs "这台机器上这东西能不能跑"——而描述的钱

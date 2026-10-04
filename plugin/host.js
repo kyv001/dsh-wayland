@@ -1992,14 +1992,14 @@ function registerTools(ctx, manager, cfg) {
 
   ctx.tools.register({
     name: 'wayland_screenshot',
-    description: 'Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. At the default scale the image is session pixels, so what you see is where pointer actions land; `origin` and `scale` carry the mapping back to input coordinates. Capture one `region` instead of the whole screen to spend less on the image and read a small area at full resolution. Pass `grid` when you need to know *where* something is: it prints the session coordinates onto the picture. The pointer is drawn at its current position; wayland_check reports the cursor theme in use. Errors if window is not currently mapped.',
+    description: 'Capture what a virtual desktop looks like and return it as an image you can see, grabbed during this call. Use it to read GUI state and check that earlier input took effect. Capture one `region` instead of the whole screen to spend less on the image and read a small area at full resolution. Pass `grid` to read coordinates off the picture. The pointer is drawn at its current position.',
     parameters: json({
       properties: {
         session: { ...sessionParam, required: true },
         window: { type: 'integer', description: 'Window id from wayland_windows; omit to capture the whole screen.' },
         region: {
           type: 'object',
-          description: 'Area to capture, in absolute session pixels. Overrides `window`. A region running past the screen edge is clipped, not rejected.',
+          description: 'Area to capture, in absolute session pixels. Overrides `window`. A region running past the screen edge is clipped.',
           properties: {
             x: { type: 'integer', required: true, description: 'Left edge in session pixels.' },
             y: { type: 'integer', required: true, description: 'Top edge in session pixels.' },
@@ -2007,7 +2007,7 @@ function registerTools(ctx, manager, cfg) {
             height: { type: 'integer', required: true, description: 'Height in session pixels.' },
           },
         },
-        grid: { type: 'number', description: `Draw a coordinate grid with a rule every N session pixels, each rule labelled with the session coordinate it sits on — x values along the top edge, y values down the left edge. Read the label and pass that number straight to wayland_input: no arithmetic, and no estimating a position from a picture. The label is always the coordinate wayland_input takes even when the capture is magnified, because the rules are drawn after scaling. Minimum ${MIN_GRID_STEP}; 50 or 100 is usually right. Forces a PNG capture.` },
+        grid: { type: 'number', description: `Draw a coordinate grid with a rule every N session pixels, labelled in the same session coordinates wayland_input takes. Minimum ${MIN_GRID_STEP}; 50 is a good value.` },
         scale: { type: 'number', description: 'Size multiplier: 1 captures native pixels (one image pixel per session pixel), 2 doubles both dimensions so small text becomes legible, 0.5 halves them. The image is session pixels × scale.' },
       },
       required: ['session'],
