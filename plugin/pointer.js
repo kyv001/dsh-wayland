@@ -90,12 +90,17 @@ function waylandString(value) {
  *   session pixels.
  * @param height - output height in pixels.
  * @param timeoutMs - give up if the handshake does not finish in time.
- * @returns a pointer with `move/click/scroll/destroy`; every method resolves once
- *   the compositor has processed the request (a `wl_display.sync` round trip), so
- *   a caller may screenshot immediately afterwards.
- * @throws when the socket, the seat or the virtual-pointer interface is missing.
+ * @param probeOnly - ask the compositor what it offers and stop: no seat bind, no
+ *   `create_virtual_pointer`, no device. Resolves `{available, interfaceVersion?,
+ *   reason?}` and never rejects, which is what a health check wants — an ephemeral
+ *   device would perturb a live session (see the note at the top of this file).
+ * @returns a pointer with `move/press/release/click/scroll/destroy`; every method
+ *   resolves once the compositor has processed the request (a `wl_display.sync`
+ *   round trip), so a caller may screenshot immediately afterwards.
+ * @throws when the socket, the seat or the virtual-pointer interface is missing
+ *   (not in `probeOnly` mode).
  */
-export function openVirtualPointer({ socketPath, width, height, timeoutMs = 5000 }) {
+export function openVirtualPointer({ socketPath, width, height, timeoutMs = 5000, probeOnly = false }) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(socketPath)
     let nextId = 2
@@ -112,17 +117,28 @@ export function openVirtualPointer({ socketPath, width, height, timeoutMs = 5000
     let seatId = 0
     let pointerId = 0
 
-    const timer = setTimeout(() => finish(new Error(`virtual pointer handshake timed out after ${timeoutMs}ms`)), timeoutMs)
+    const timer = setTimeout(() => {
+      const reason = `virtual pointer handshake timed out after ${timeoutMs}ms`
+      if (probeOnly) finish(null, { available: false, reason })
+      else finish(new Error(reason))
+    }, timeoutMs)
 
-    function finish(error) {
+    function finish(error, value) {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (probeOnly) {
+        /* One contract for every outcome: a probe resolves a verdict. */
+        try { socket.end() } catch {}
+        try { socket.destroy() } catch {}
+        resolve(value ?? { available: false, reason: String(error?.message ?? error ?? 'unknown failure') })
+        return
+      }
       if (error) {
         try { socket.destroy() } catch {}
         reject(error)
       } else {
-        resolve(api)
+        resolve(value ?? api)
       }
     }
 
@@ -349,6 +365,7 @@ export function openVirtualPointer({ socketPath, width, height, timeoutMs = 5000
       const seat = globals.get('wl_seat')
       if (!manager) throw new Error('the compositor does not offer zwlr_virtual_pointer_manager_v1')
       if (!seat) throw new Error('the compositor does not offer wl_seat')
+      if (probeOnly) return { available: true, interfaceVersion: manager.version }
 
       managerId = nextId++
       send(message(registryId, 0, Buffer.concat([
@@ -368,6 +385,25 @@ export function openVirtualPointer({ socketPath, width, height, timeoutMs = 5000
       return { pointerId, interfaceVersion: manager.version }
     })()
 
-    handshake.then(() => finish(null)).catch((error) => finish(error))
+    handshake
+      .then((value) => finish(null, probeOnly ? value : undefined))
+      .catch((error) => {
+        const reason = error?.message ?? String(error)
+        /* A probe reports what it could not find; an open fails loudly. */
+        if (probeOnly) finish(null, { available: false, reason })
+        else finish(error)
+      })
   })
+}
+
+/**
+ * Read-only capability probe: does this compositor offer the virtual-pointer
+ * protocol? It binds nothing and creates no device, so it is safe to run against
+ * a live session — an ephemeral pointer is exactly what breaks button delivery
+ * (see the file header), so a health check must never create one.
+ *
+ * @returns `{available: true, interfaceVersion}` or `{available: false, reason}`.
+ */
+export function probeVirtualPointer(options) {
+  return openVirtualPointer({ ...options, probeOnly: true })
 }

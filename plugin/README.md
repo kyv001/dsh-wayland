@@ -7,9 +7,9 @@ sidebar, with agent tools to drive them.
 
 - **Right sidebar panel** — a `wayland` tab type that streams the session
   (`grim` → MJPEG) and forwards your mouse and keyboard into it.
-- **Seven agent tools** — create/list/close sessions, launch programs, list
-  windows, screenshot (whole output or one window, returned as an image), and
-  inject keyboard/pointer/focus events.
+- **Eight agent tools** — create/list/close sessions, launch programs, list
+  windows, screenshot (whole output or one window, returned as an image), inject
+  keyboard/pointer/focus events, and check the plugin's own health.
 - Each session is an isolated sway compositor with its own `XDG_RUNTIME_DIR`,
   Wayland socket, Xwayland display and window set. Nothing appears on your real
   desktop.
@@ -36,10 +36,12 @@ resolved through `config.binDir` first and then `PATH`.
 something required is absent:
 
 - the startup log prints the whole report once;
-- `wayland_session_list` always succeeds and carries the toolchain: what
-  resolved and through which source, what is missing, what each binary is for,
-  and the install lines your distribution needs (Debian/Ubuntu, Fedora, Arch,
-  plus a generic "put them on PATH" line for everything else);
+- `wayland_check` always succeeds and carries the toolchain: what resolved and
+  through which source, what is missing, what each binary is for, and the install
+  lines your distribution needs (Debian/Ubuntu, Fedora, Arch, plus a generic
+  "put them on PATH" line for everything else), plus whether those binaries
+  actually run, whether the session root is writable, and one health line per
+  live session;
 - the tools that need the toolchain (`create`, `launch`, `windows`, `screenshot`,
   `input`) fail *with that report as the message* rather than a bare `ENOENT`;
 - the sidebar panel shows the same missing names and the two ways to fix it.
@@ -185,7 +187,8 @@ The HUD reads `● 19.9 fps · 32 ms · 229 KB · 1600x1000`, switches to
 | Tool | Purpose |
 |---|---|
 | `wayland_session_create` | start a session (optional name/size), returns its id |
-| `wayland_session_list` | live sessions, plus the toolchain report (what resolved, what is missing, how to fix) — always succeeds |
+| `wayland_session_list` | live sessions: id, name, size, programs started, whether the compositor is still alive |
+| `wayland_check` | plugin health: the toolchain report (what resolved, what is missing, how to fix), whether those binaries actually run, whether the session root is writable, and one health line per live session — always succeeds |
 | `wayland_session_close` | stop the session and every program in it |
 | `wayland_launch` | start a program inside the session, returns pid + window |
 | `wayland_windows` | mapped windows: id, app id, title, pid, absolute rect |
@@ -282,8 +285,9 @@ Registered under `/dsh-wayland` on the DSH web server.
 - **Clicks need `zwlr_virtual_pointer_manager_v1`.** sway/wlroots always provide
   it, so this only matters on another wlroots compositor; there the plugin falls
   back to `swaymsg seat … cursor set` plus `wlrctl`, where clicks can be dropped.
-  `wayland_session_list` reports the toolchain, not this protocol — the fallback is
-  announced on stderr (`no persistent virtual pointer …`) when it happens.
+  `wayland_check` reports the toolchain *and*, per session, whether this protocol
+  is offered; the fallback is announced on stderr (`no persistent virtual
+  pointer …`) when it happens.
 - **A key cannot be held** (see *Input injection*): `key` is always a press and a
   release inside one directive, because `wtype` rebuilds its virtual keyboard per
   call. Mouse buttons can be held, so long press and `drag` work.

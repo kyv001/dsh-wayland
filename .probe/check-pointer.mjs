@@ -21,7 +21,7 @@ import os from 'node:os'
 import { join } from 'node:path'
 
 const HERE = new URL('.', import.meta.url).pathname
-const { openVirtualPointer } = await import(`file://${join(HERE, '..', 'plugin', 'pointer.js')}`)
+const { openVirtualPointer, probeVirtualPointer } = await import(`file://${join(HERE, '..', 'plugin', 'pointer.js')}`)
 
 const failures = []
 const check = (condition, message) => { if (!condition) failures.push(message) }
@@ -185,6 +185,33 @@ const cleanup = (fake) => {
   check(error instanceof Error, 'a compositor without the interface must reject, not hang')
   check(/virtual_pointer/.test(String(error?.message)), `the rejection should name the missing interface, saw ${error?.message}`)
   cleanup(fake)
+}
+
+/* ------------------------------------- the read-only capability probe */
+{
+  /* A health check must be able to ask "is the protocol here?" without creating
+     an ephemeral pointer — an ephemeral device is what breaks button delivery. */
+  const fake = await fakeCompositor()
+  const verdict = await probeVirtualPointer({ socketPath: fake.socketPath, timeoutMs: 2000 })
+  check(verdict?.available === true, `probe must report the interface as available, saw ${JSON.stringify(verdict)}`)
+  check(verdict?.interfaceVersion === 2, `probe must report the interface version, saw ${JSON.stringify(verdict)}`)
+  check(fake.state.created.length === 0, 'probe must not create a virtual pointer device')
+  check(fake.state.binds.length === 0, 'probe must bind nothing')
+  cleanup(fake)
+}
+{
+  const fake = await fakeCompositor({ withVirtualPointer: false })
+  const verdict = await probeVirtualPointer({ socketPath: fake.socketPath, timeoutMs: 2000 })
+  check(verdict?.available === false, `a compositor without the interface must probe as unavailable, saw ${JSON.stringify(verdict)}`)
+  check(/virtual_pointer/.test(String(verdict?.reason)), `the reason should name the interface, saw ${JSON.stringify(verdict?.reason)}`)
+  check(fake.state.created.length === 0, 'a failed probe must not create a device either')
+  cleanup(fake)
+}
+{
+  /* An unreachable socket is data for a check tool, never an exception. */
+  const verdict = await probeVirtualPointer({ socketPath: join(os.tmpdir(), 'dsh-wayland-no-such-socket'), timeoutMs: 1000 })
+  check(verdict?.available === false, `an unreachable socket must probe as unavailable, saw ${JSON.stringify(verdict)}`)
+  check(typeof verdict?.reason === 'string' && verdict.reason.length > 0, 'an unavailable probe must carry a reason')
 }
 
 if (failures.length > 0) {

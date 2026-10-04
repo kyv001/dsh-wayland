@@ -5,11 +5,11 @@ the live definitions, not hand-copied). Descriptions carry the purpose, when to
 use the tool, and what it returns; defaults, units and id provenance live on the
 parameters they belong to.
 
-Seven tools, 9644 characters of schema in total.
+8 tools, 9801 characters of schema in total.
 
 ## `wayland_session_create`
 
-Start a private headless Wayland desktop (sway) that the user can watch live in the DSH right sidebar, and return the session id the other wayland_* tools take. Use it when a task needs a window. A session starts empty (wayland_launch starts programs), lives as long as DSH does, and only a few may exist at once. Fails with the dependency report if the toolchain is missing.
+Start a private headless Wayland desktop (sway) that the user can watch live in the DSH right sidebar, and return the session id the other wayland_* tools take. Use it when a task needs a window. A session starts empty (wayland_launch starts programs), lives as long as DSH does, and only a few may exist at once.
 
 | parameter | type | required | description |
 |---|---|---|---|
@@ -19,7 +19,13 @@ Start a private headless Wayland desktop (sway) that the user can watch live in 
 
 ## `wayland_session_list`
 
-List the virtual desktops that exist right now — id, name, size, how many programs each has started, and whether its compositor is still alive — and report the toolchain this plugin runs on. Call it first when earlier work may have left a desktop running instead of creating another one, and whenever another wayland_* tool reports missing dependencies: that report names each missing binary, what it is for, and how to install it or point config.binDir at it. It always succeeds, even with nothing installed.
+List the virtual desktops that exist right now — id, name, size, how many programs each has started, and whether its compositor is still alive. Call it first when earlier work may have left a desktop running instead of creating another one.
+
+*No parameters.*
+
+## `wayland_check`
+
+Check this plugin's health: the toolchain (what resolved and how, what is missing, what each binary is for, how to install it), whether those binaries actually run, whether the session root is writable, and a health line per live session. Call it when another wayland_* tool reports missing dependencies, or when a session misbehaves. Always succeeds and changes nothing.
 
 *No parameters.*
 

@@ -30,7 +30,7 @@ try {
 } catch {
   /* fall through to the plain specifier */
 }
-const { openVirtualPointer } = await import(`${pointerUrl.href}${pointerStamp}`)
+const { openVirtualPointer, probeVirtualPointer } = await import(`${pointerUrl.href}${pointerStamp}`)
 
 export const name = 'dsh-wayland'
 export const inject = ['tools', 'webServer']
@@ -328,17 +328,27 @@ function createManager(ctx, cfg) {
     return resolveBin(name)?.path
   }
 
+  /**
+   * The dependency report, plus the one place to go deeper. The report itself is
+   * the error text of every tool, so this is the only sentence that needs to point
+   * at `wayland_check` — no tool description has to explain diagnostics.
+   */
+  function dependencyError(toolchain, action) {
+    const report = dependencyReport(toolchain, action)
+    return `${report}\nwayland_check reports the same, plus what actually runs and each session's health.`
+  }
+
   /** Resolved path of a required binary, or an actionable missing-dependency error. */
   function requireBin(name, action) {
     const resolved = binPath(name)
     if (resolved) return resolved
-    throw new Error(dependencyReport(toolchainNow(), action) || `Missing required binary ${name}`)
+    throw new Error(dependencyError(toolchainNow(), action) || `Missing required binary ${name}`)
   }
 
   /** Nothing may start until every required binary resolves. */
   function requireToolchain(action) {
     const toolchain = toolchainNow()
-    if (!toolchain.ready) throw new Error(dependencyReport(toolchain, action))
+    if (!toolchain.ready) throw new Error(dependencyError(toolchain, action))
     return toolchain
   }
 
@@ -1192,9 +1202,136 @@ function createManager(ctx, cfg) {
     return result
   }
 
+  /* ------------------------------------------------------------ self-check */
+
+  /**
+   * Cheap "it starts and speaks" probes. `existsSync` cannot tell a working binary
+   * from one whose shared libraries are missing — a documented limitation — and
+   * these run with no session and no side effects. `wtype` has no version flag, so
+   * it is asked for its usage text.
+   */
+  const RUN_PROBES = {
+    sway: ['--version'],
+    swaymsg: ['--version'],
+    grim: ['-h'],
+    wlrctl: ['--version'],
+    wtype: [],
+  }
+  const LOADER_FAILURE = /error while loading|shared librar|cannot execute|command not found|No such file/i
+
+  /** Run one binary probe; never throws. Usage text on a non-zero exit still means "it runs". */
+  async function probeBinary(entry) {
+    const args = RUN_PROBES[entry.name]
+    if (!entry.path || !args) return { name: entry.name, status: 'skip', detail: 'present (no side-effect-free probe)' }
+    try {
+      const { stdout, stderr } = await runOnce(entry.path, args, { timeoutMs: 4000, label: `${entry.name} probe` })
+      const line = (stdout.toString('utf8') || stderr).trim().split('\n')[0] ?? ''
+      return { name: entry.name, status: 'ok', detail: (line || 'ran').slice(0, 60) }
+    } catch (error) {
+      const line = `${error?.stdout?.toString('utf8') ?? ''}${error?.stderr ?? ''}`.trim().split('\n')[0] ?? ''
+      const spoke = line.length > 0 && !LOADER_FAILURE.test(line)
+      return { name: entry.name, status: spoke ? 'ok' : 'fail', detail: (line || error?.message || 'failed').slice(0, 80) }
+    }
+  }
+
+  /** Can this plugin write where it must? Create the directory, write, remove. */
+  async function probeSessionRoot() {
+    const file = path.join(root, `.check-${process.pid}`)
+    try {
+      await mkdir(root, { recursive: true })
+      await writeFile(file, 'ok', 'utf8')
+      await rm(file, { force: true })
+      return { name: 'sessionRoot', status: 'ok', detail: `${root} (writable)` }
+    } catch (error) {
+      return { name: 'sessionRoot', status: 'fail', detail: `${root}: ${error?.message ?? error}` }
+    }
+  }
+
+  /** One session's quick health: compositor, IPC, Xwayland, pointer protocol. */
+  async function checkSession(session) {
+    const checks = []
+    const alive = session.proc.exitCode === null
+    checks.push({
+      name: 'compositor',
+      status: alive ? 'ok' : 'fail',
+      detail: alive ? `pid ${session.proc.pid} alive` : `exited with ${session.proc.exitCode}`,
+    })
+    if (alive) {
+      try {
+        const { stdout } = await swaymsg(session, ['-t', 'get_version', '--raw'], { timeoutMs: 4000, label: 'swaymsg get_version' })
+        const version = JSON.parse(stdout.toString('utf8'))?.human_readable ?? 'responded'
+        checks.push({ name: 'ipc', status: 'ok', detail: `sway ${version}` })
+      } catch (error) {
+        checks.push({ name: 'ipc', status: 'fail', detail: String(error?.message ?? error).slice(0, 120) })
+      }
+      const display = await xwaylandDisplay(session).catch(() => null)
+      checks.push({
+        name: 'xwayland',
+        status: display ? 'ok' : 'warn',
+        detail: display ?? 'no DISPLAY: X11 apps (Tk, many games) will not start',
+      })
+      const pointer = await probeVirtualPointer({
+        socketPath: path.join(session.runtimeDir, session.display),
+        timeoutMs: 1500,
+      }).catch((error) => ({ available: false, reason: error?.message ?? String(error) }))
+      checks.push({
+        name: 'pointer',
+        status: pointer.available ? 'ok' : 'warn',
+        detail: pointer.available
+          ? `zwlr_virtual_pointer_manager_v1 v${pointer.interfaceVersion}`
+          : `${pointer.reason}; falls back to swaymsg/wlrctl, where clicks can be dropped`,
+      })
+    }
+    return { id: session.id, name: session.name, ok: checks.every((entry) => entry.status !== 'fail'), checks }
+  }
+
+  /**
+   * The whole quick health picture: toolchain, binaries that actually run, a
+   * writable session root, and one line per live session. Never throws and never
+   * changes anything — a broken host is data, not an exception.
+   */
+  async function check() {
+    const toolchain = toolchainNow()
+    const checks = []
+    const resolvedRequired = toolchain.required.filter((entry) => entry.path)
+    checks.push({
+      name: 'toolchain',
+      status: toolchain.ready ? (toolchain.missingOptional.length > 0 ? 'warn' : 'ok') : 'fail',
+      detail: `${resolvedRequired.length}/${toolchain.required.length} required resolved via ${toolchain.mode}`
+        + (toolchain.missingRequired.length > 0 ? `; missing ${toolchain.missingRequired.join(', ')}` : '')
+        + (toolchain.missingOptional.length > 0 ? `; optional missing ${toolchain.missingOptional.join(', ')}` : ''),
+    })
+
+    const probed = (await Promise.all([...toolchain.required, ...toolchain.optional].map(probeBinary)))
+      .filter((entry) => entry.status !== 'skip')
+    const broken = probed.filter((entry) => entry.status === 'fail')
+    checks.push({
+      name: 'binaries run',
+      status: probed.length === 0 ? 'warn' : (broken.length === 0 ? 'ok' : 'fail'),
+      detail: probed.length === 0 ? 'nothing resolved, so nothing could be run' : probed.map((entry) => `${entry.name}: ${entry.detail}`).join('; '),
+    })
+
+    checks.push(await probeSessionRoot())
+    checks.push({
+      name: 'sessions',
+      status: sessions.size >= cfg.maxSessions ? 'warn' : 'ok',
+      detail: `${sessions.size} of ${cfg.maxSessions} in use`,
+    })
+
+    const live = []
+    for (const session of sessions.values()) live.push(await checkSession(session))
+
+    return {
+      ok: checks.every((entry) => entry.status !== 'fail') && live.every((entry) => entry.ok),
+      checks,
+      toolchain,
+      sessions: live,
+    }
+  }
+
   return {
     root, toolchain: toolchainNow, binPath, requireToolchain,
-    create, close, list, windows, launch, input, screenshot, capture, require, byId,
+    create, close, list, windows, launch, input, screenshot, capture, require, byId, check,
     actionSchema,
     envFor, swaymsg, size: () => sessions.size,
     shutdownAll: async () => {
@@ -1290,7 +1427,7 @@ function registerTools(ctx, manager, cfg) {
 
   ctx.tools.register({
     name: 'wayland_session_create',
-    description: 'Start a private headless Wayland desktop (sway) that the user can watch live in the DSH right sidebar, and return the session id the other wayland_* tools take. Use it when a task needs a window. A session starts empty (wayland_launch starts programs), lives as long as DSH does, and only a few may exist at once. Fails with the dependency report if the toolchain is missing.',
+    description: 'Start a private headless Wayland desktop (sway) that the user can watch live in the DSH right sidebar, and return the session id the other wayland_* tools take. Use it when a task needs a window. A session starts empty (wayland_launch starts programs), lives as long as DSH does, and only a few may exist at once.',
     parameters: json({
       properties: {
         name: { type: 'string', description: 'Label shown in the session list and in the sidebar panel.' },
@@ -1319,9 +1456,20 @@ function registerTools(ctx, manager, cfg) {
     },
   })
 
+  /** One health line: a name, a verdict, and a sentence that says what to do. */
+  const checkItem = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      name: { type: 'string', required: true },
+      status: { type: 'string', required: true, enum: ['ok', 'warn', 'fail'] },
+      detail: { type: 'string', required: true },
+    },
+  }
+
   ctx.tools.register({
     name: 'wayland_session_list',
-    description: 'List the virtual desktops that exist right now — id, name, size, how many programs each has started, and whether its compositor is still alive — and report the toolchain this plugin runs on. Call it first when earlier work may have left a desktop running instead of creating another one, and whenever another wayland_* tool reports missing dependencies: that report names each missing binary, what it is for, and how to install it or point config.binDir at it. It always succeeds, even with nothing installed.',
+    description: 'List the virtual desktops that exist right now — id, name, size, how many programs each has started, and whether its compositor is still alive. Call it first when earlier work may have left a desktop running instead of creating another one.',
     parameters: json({ properties: {} }),
     output: {
       schema: out({
@@ -1344,6 +1492,32 @@ function registerTools(ctx, manager, cfg) {
               },
             },
           },
+        },
+      }),
+      render: (args, value) => toolText(
+        value.sessions.length === 0 ? 'No Wayland sessions are running.' : `${value.sessions.length} Wayland session(s)`,
+        value.sessions.map((s) => `- ${s.id} "${s.name}" ${s.width}x${s.height} apps=${s.apps}${s.alive ? '' : ' (dead)'}`),
+      ),
+    },
+    presentCall: () => ({ card: 'generic', title: 'List Wayland sessions', kind: 'other' }),
+    async execute() {
+      return { sessions: manager.list() }
+    },
+  })
+
+  /* The one tool that answers "can this work here at all?" — toolchain, binaries
+     that actually run, the session root, and a health line per live session. It
+     owns every diagnostic fact, so no other tool's description has to carry one;
+     a failing tool simply prints this report's text as its error. */
+  ctx.tools.register({
+    name: 'wayland_check',
+    description: 'Check this plugin\'s health: the toolchain (what resolved and how, what is missing, what each binary is for, how to install it), whether those binaries actually run, whether the session root is writable, and a health line per live session. Call it when another wayland_* tool reports missing dependencies, or when a session misbehaves. Always succeeds and changes nothing.',
+    parameters: json({ properties: {} }),
+    output: {
+      schema: out({
+        properties: {
+          ok: { type: 'boolean', required: true, description: 'False when any check failed.' },
+          checks: { type: 'array', required: true, items: checkItem },
           toolchain: {
             type: 'object',
             required: true,
@@ -1358,19 +1532,38 @@ function registerTools(ctx, manager, cfg) {
               installHints: { type: 'array', required: true, description: 'Package-manager lines for this toolchain, per distribution.', items: { type: 'object', properties: { platform: { type: 'string', required: true }, command: { type: 'string', required: true } } } },
             },
           },
+          sessions: {
+            type: 'array',
+            required: true,
+            description: 'One entry per live session; empty when there are none.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                id: { type: 'string', required: true },
+                name: { type: 'string', required: true },
+                ok: { type: 'boolean', required: true },
+                checks: { type: 'array', required: true, items: checkItem },
+              },
+            },
+          },
         },
       }),
       render: (args, value) => toolText(
-        value.sessions.length === 0 ? 'No Wayland sessions are running.' : `${value.sessions.length} Wayland session(s)`,
+        `Wayland check: ${value.ok ? 'OK' : 'PROBLEMS'}${value.sessions.length > 0 ? ` (${value.sessions.length} session(s))` : ''}`,
         [
-          ...(value.sessions.length === 0 ? [] : value.sessions.map((s) => `- ${s.id} "${s.name}" ${s.width}x${s.height} apps=${s.apps}${s.alive ? '' : ' (dead)'}`)),
+          ...value.checks.map((entry) => `- ${entry.name} [${entry.status}]: ${entry.detail}`),
           ...toolchainLines(value.toolchain),
+          ...value.sessions.flatMap((session) => [
+            `session ${session.id} "${session.name}" [${session.ok ? 'ok' : 'PROBLEMS'}]`,
+            ...session.checks.map((entry) => `  - ${entry.name} [${entry.status}]: ${entry.detail}`),
+          ]),
         ],
       ),
     },
-    presentCall: () => ({ card: 'generic', title: 'List Wayland sessions', kind: 'other' }),
+    presentCall: () => ({ card: 'generic', title: 'Check the Wayland plugin', kind: 'read' }),
     async execute() {
-      return { sessions: manager.list(), toolchain: manager.toolchain() }
+      return manager.check()
     },
   })
 

@@ -27,7 +27,7 @@ lines.push('the live definitions, not hand-copied). Descriptions carry the purpo
 lines.push('use the tool, and what it returns; defaults, units and id provenance live on the')
 lines.push('parameters they belong to.')
 lines.push('')
-lines.push(`Seven tools, ${tools.reduce((sum, t) => sum + JSON.stringify({ name: t.name, description: t.description, parameters: t.parameters }).length, 0)} characters of schema in total.`)
+lines.push(`${tools.length} tools, ${tools.reduce((sum, t) => sum + JSON.stringify({ name: t.name, description: t.description, parameters: t.parameters }).length, 0)} characters of schema in total.`)
 lines.push('')
 
 const typeOf = (node) => {

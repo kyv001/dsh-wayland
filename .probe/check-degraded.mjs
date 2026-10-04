@@ -80,35 +80,49 @@ process.env.PATH = ''
   const { ctx, tools } = stubContext()
   resetGuard()
   apply(ctx, { binDir: join(TMP, 'does-not-exist'), sessionRoot: join(TMP, 'root-empty') })
-  check(tools.length === 7, `expected 7 tools, registered ${tools.length}`)
+  check(tools.length === 8, `expected 8 tools, registered ${tools.length}`)
   const registry = byName(tools)
 
+  /* The doctor is its own tool now: `wayland_check` owns every diagnostic fact,
+     and `wayland_session_list` is a plain listing. */
   const listed = await registry.get('wayland_session_list').execute({})
-  check(listed.toolchain.ready === false, 'nothing installed must not report ready')
-  check(JSON.stringify(listed.toolchain.missingRequired) === JSON.stringify(REQUIRED),
-    `missingRequired was ${JSON.stringify(listed.toolchain.missingRequired)}`)
-  check(JSON.stringify(listed.toolchain.missingOptional) === JSON.stringify(OPTIONAL),
-    `missingOptional was ${JSON.stringify(listed.toolchain.missingOptional)}`)
   check(listed.sessions.length === 0, 'a fresh plugin must report no sessions')
-  check(listed.toolchain.optional.some((entry) => entry.name === 'wlrctl'),
+  check(listed.toolchain === undefined, 'wayland_session_list must not carry the toolchain any more')
+  const listText = render(registry.get('wayland_session_list'), {}, listed)
+  check(!listText.includes('sway'), `the listing must not explain the toolchain, saw ${JSON.stringify(listText)}`)
+
+  const checked = await registry.get('wayland_check').execute({})
+  check(checked.toolchain.ready === false, 'nothing installed must not report ready')
+  check(checked.ok === false, 'a check with nothing installed must report problems')
+  check(checked.checks.some((entry) => entry.name === 'toolchain' && entry.status === 'fail'),
+    'the check must carry a failing toolchain line')
+  check(checked.checks.some((entry) => entry.name === 'binaries run' && entry.status === 'warn'),
+    'with nothing resolved the runnability check must say it could not verify anything')
+  check(checked.checks.some((entry) => entry.name === 'sessionRoot'),
+    'the check must cover the session root')
+  check(JSON.stringify(checked.toolchain.missingRequired) === JSON.stringify(REQUIRED),
+    `missingRequired was ${JSON.stringify(checked.toolchain.missingRequired)}`)
+  check(JSON.stringify(checked.toolchain.missingOptional) === JSON.stringify(OPTIONAL),
+    `missingOptional was ${JSON.stringify(checked.toolchain.missingOptional)}`)
+  check(checked.toolchain.optional.some((entry) => entry.name === 'wlrctl'),
     'pointer fallback wlrctl must be optional, not required: pointer input needs no binary')
 
-  const text = render(registry.get('wayland_session_list'), {}, listed)
-  for (const name of REQUIRED) check(text.includes(name), `list report never names ${name}`)
+  const text = render(registry.get('wayland_check'), {}, checked)
+  for (const name of REQUIRED) check(text.includes(name), `check report never names ${name}`)
   for (const name of REQUIRED) {
-    const entry = listed.toolchain.required.find((item) => item.name === name)
+    const entry = checked.toolchain.required.find((item) => item.name === name)
     check(typeof entry.purpose === 'string' && entry.purpose.length > 0, `${name} has no purpose`)
-    check(text.includes(entry.purpose), `list report never explains ${name}`)
+    check(text.includes(entry.purpose), `check report never explains ${name}`)
   }
-  check(text.includes('binDir'), 'list report never mentions binDir')
-  check(Array.isArray(listed.toolchain.installHints) && listed.toolchain.installHints.length >= 3,
+  check(text.includes('binDir'), 'check report never mentions binDir')
+  check(Array.isArray(checked.toolchain.installHints) && checked.toolchain.installHints.length >= 3,
     'the toolchain payload carries no install hints for the panel to render')
-  for (const hint of listed.toolchain.installHints) {
+  for (const hint of checked.toolchain.installHints) {
     check(typeof hint.platform === 'string' && typeof hint.command === 'string', 'an install hint is malformed')
   }
-  for (const hint of listed.toolchain.installHints) check(text.includes(hint.command), `list report omits the hint for ${hint.platform}`)
+  for (const hint of checked.toolchain.installHints) check(text.includes(hint.command), `check report omits the hint for ${hint.platform}`)
   check(text.includes('apt install') && text.includes('pacman -S') && text.includes('dnf install'),
-    'list report is missing one of the apt/dnf/pacman install lines')
+    'check report is missing one of the apt/dnf/pacman install lines')
   check(!/nix/i.test(JSON.stringify(listed.toolchain)) && !/nix/i.test(text),
     'the dependency report mentions a distribution-specific mechanism instead of plain PATH/packages')
 
@@ -116,6 +130,7 @@ process.env.PATH = ''
   check(create instanceof Error, 'wayland_session_create must fail, not hang or crash')
   for (const name of REQUIRED) check(String(create?.message).includes(name), `create error never names ${name}`)
   check(String(create?.message).includes('Install them'), 'create error never says how to fix it')
+  check(String(create?.message).includes('wayland_check'), 'a dependency error must point at wayland_check for the deeper picture')
 
   /* A tool that needs a session must explain the toolchain, not just "unknown id". */
   const windows = await registry.get('wayland_windows').execute({ session: 'nope' }).then(() => null, (error) => error)
@@ -124,7 +139,7 @@ process.env.PATH = ''
   console.log('--- model-facing report with nothing installed (this is what the model reads) ---')
   console.log(text)
   console.log('--- the same payload the panel renders (GET /boot -> toolchain) ---')
-  console.log(JSON.stringify(listed.toolchain, null, 1))
+  console.log(JSON.stringify(checked.toolchain, null, 1))
 }
 
 /* --------------------------------------------------- partially installed */
@@ -132,7 +147,7 @@ process.env.PATH = ''
   const { ctx, tools } = stubContext()
   resetGuard()
   apply(ctx, { binDir: binDirWith(['sway']), sessionRoot: join(TMP, 'root-partial') })
-  const listed = await byName(tools).get('wayland_session_list').execute({})
+  const listed = await byName(tools).get('wayland_check').execute({})
   check(listed.toolchain.ready === false, 'a partial toolchain must not report ready')
   check(JSON.stringify(listed.toolchain.missingRequired) === JSON.stringify(REQUIRED.filter((name) => name !== 'sway')),
     `partial missingRequired was ${JSON.stringify(listed.toolchain.missingRequired)}`)
@@ -151,10 +166,11 @@ process.env.PATH = ''
   const { ctx, tools } = stubContext()
   resetGuard()
   apply(ctx, { binDir: binDirWith([...REQUIRED, ...OPTIONAL]), sessionRoot: join(TMP, 'root-full') })
-  const listed = await byName(tools).get('wayland_session_list').execute({})
+  const listed = await byName(tools).get('wayland_check').execute({})
   check(listed.toolchain.ready === true, 'a complete toolchain must report ready')
   check(listed.toolchain.missingRequired.length === 0, 'a complete toolchain must miss nothing required')
-  const text = render(byName(tools).get('wayland_session_list'), {}, listed)
+  check(listed.ok === true, `a healthy host must check out, saw ${JSON.stringify(listed.checks)}`)
+  const text = render(byName(tools).get('wayland_check'), {}, listed)
   check(text.includes('Toolchain ready'), `ready report was: ${text}`)
   check(text.includes('sway via binDir'), `ready report never shows how sway resolved: ${text}`)
   console.log('--- complete toolchain')

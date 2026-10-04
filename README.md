@@ -16,7 +16,7 @@
 | 插件包 | `dsh-wayland` 0.1.0，源码即 [`plugin/`](plugin)；已可按单包发布（`private` 已去掉、有 icon/locale/LICENSE，`npm pack` 9 个文件 34.2 kB），尚未发布 |
 | 安装形态 | 作为普通 bundle 装进本机 DSH profile（未发布 npm，所以是 `link:<仓库>/plugin` + `dsh.profile.bundles` 里的一行，`node_modules/dsh-wayland` 是指向仓库的软链），Plugin Manager 中 enabled；profile patch 里只有一条 `- id: dsh-wayland / disabled: false`，没有任何机器路径 |
 | 依赖 | 本体零 npm 依赖；外部**必需** `sway`/`swaymsg`/`grim`/`wtype`，`wlrctl` 降为**可选**（只在合成器没有虚拟指针协议时兜底）；按 `binDir` → `PATH` 解析；**指针注入默认不用任何外部二进制**——插件自己维持一个会话级虚拟指针（见 §3.3）；**仓库里不含工具链、不含发行版或包管理器配方**；缺依赖不崩，工具与面板都会报缺哪几个、各自干什么、怎么装（见 §3.6） |
-| 依赖现状 | **本机（当前系统配置）工具链已就绪**：PATH 上有 `sway`/`swaymsg`/`grim`/`wtype`/`wlrctl`（实测解析到 `/etc/profiles/per-user/kyv/bin/*`），没有配 `binDir`；可选缺 `wayvnc`/`wf-recorder`/`xterm`。插件 `ready`，7 个工具与面板取帧都可用（§9 有本轮实测记录） |
+| 依赖现状 | **本机（当前系统配置）工具链已就绪**：PATH 上有 `sway`/`swaymsg`/`grim`/`wtype`/`wlrctl`（实测解析到 `/etc/profiles/per-user/kyv/bin/*`），没有配 `binDir`；可选缺 `wayvnc`/`wf-recorder`/`xterm`。插件 `ready`，8 个工具与面板取帧都可用（§9 有本轮实测记录） |
 | 工具 | 7 个：`wayland_session_create / _list / _close / launch / windows / screenshot / input`。端到端实测跑通（含图像返回）；工具链就绪时 7 个全部可用，`wayland_session_list` 兼作依赖体检，缺依赖时其余工具按 §3.6 报缺什么 |
 | 面板 | 右栏 `wayland` tab：字号跟随侧栏（14px）、en/zh 双语（跟随 DSH 的语言设置）、每个控件都有悬停说明、**没有 Live/Crisp 切换**（帧格式由 `liveMediaType` 决定）。帧/HUD/输入回传已由用户目视确认；工具链就绪时面板显示实时画面（注册状态已用 Client inspect 在实时页面核对，像素仍由用户目视） |
 | 实时性 | 默认 Live = JPEG 1:1 q82 @ **20 fps**；本机实测面板循环 19.9 fps、最差帧 46ms、不设限上限 ~31 fps |
@@ -33,7 +33,7 @@
 ```
 LICENSE                 MIT（根目录副本；与 plugin/LICENSE 逐字节一致，由 `.probe/check-identity.mjs` 核对）
 plugin/                 DSH bundle（源码即安装源，link 安装）
-  host.js               Host half：会话管理器 + 依赖探测/报告 + HTTP 取帧/控制服务 + 7 个工具定义（约 1550 行）
+  host.js               Host half：会话管理器 + 依赖探测/报告 + HTTP 取帧/控制服务 + 8 个工具定义（含 `wayland_check` 自检）（约 2000 行）
   pointer.js            会话级持久虚拟指针：手写 Wayland 协议（只用 node 内置），绝对定位 + 按键 + 滚轮（约 350 行）
   client.js             Client half：右栏 tab（逐帧 fetch 循环、HUD、依赖横幅、输入回传）+ **面板全部文案**（内联 `DICT`，49 键 × 中英）
   package.json          bundle 清单：name/icon/files/exports + dsh.bundle.patch + dsh.client
@@ -47,11 +47,11 @@ docs/
   *-demo*.png           实测截图（工具返回的原始字节）
 .probe/
   dsh-tools.mjs         定位正在运行的 DSH 安装（$DSH_TOOLS → 进程的 --app-path → 父进程链）
-  check-plugin.mjs      离线校验：把 7 个工具定义喂给真实的 schema 校验器（不需要任何工具链）
+  check-plugin.mjs      离线校验：把 8 个工具定义喂给真实的 schema 校验器（不需要任何工具链）
   check-identity.mjs    离线校验：包名 / client.js 注册 id / patch 行名三处一致，且包可发布
-  check-degraded.mjs    离线校验：工具链全缺 / 部分缺 / 齐全三种情况下的降级与报告
+  check-degraded.mjs    离线校验：工具链全缺 / 部分缺 / 齐全三种情况下的降级与报告，以及 `wayland_check` 的自检形状（含"什么都没解析出来时不许报 ok"）
   check-panel.mjs       离线校验：用迷你 React 把面板组件树渲染出来，断言中英双语与字典键齐平、**悬停说明可达**、**跟随宿主字号**、locale 迟挂载、字典被拒/注册抛错都不致命、无 Live/Crisp；`DSH_WAYLAND_CLIENT=<file>` 可改测服务端实际提供的那份字节
-  check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手与报文——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
+  check-pointer.mjs     离线校验：用一个假合成器（unix socket）断言 pointer.js 的握手、报文与**只读能力探测**（不建设备）——只建一个持久虚拟指针、move 用 motion_absolute 带字面像素与 extent、click 是先按后放的 BTN_LEFT、滚轮带 axis_source、destroy 回收、缺协议时明确报错
   render-tools.mjs      重新渲染 docs/tool-definitions.md
 ```
 
@@ -180,7 +180,7 @@ Host 进程把插件模块缓存到进程结束：**已安装的 bundle 行改�
 | 出口 | 内容 |
 |---|---|
 | 启动日志 | 缺谁、各自用途、`binDir` 当前值，以及 Debian/Fedora/Arch + "其他发行版"四条安装行 |
-| `wayland_session_list` | 永远成功；额外返回 `toolchain`（ready / mode / binDir / 已解析项与来源 / missingRequired / missingOptional） |
+| `wayland_check` | 永远成功；返回 `toolchain`（ready / mode / binDir / 已解析项与来源 / missingRequired / missingOptional）+ **已解析的二进制用无副作用探针跑一遍** + `sessionRoot` 是否可写 + 每个会话一行体检（合成器 / IPC / Xwayland / 指针协议） |
 | 需要工具链的工具 | `create`/`launch`/`windows`/`screenshot`/`input` 抛出的错误文本就是这份报告；没有会话时调 `windows` 之类的工具，只要工具链也缺就报依赖而不是 `unknown session` |
 | 面板 | 缺哪些、为什么、去哪里装；只缺可选时降级成一行提示 |
 
@@ -265,8 +265,8 @@ ENOENT。以上三种工具链状态（全缺/部分/齐全）都有离线校验
 
 ## 5. 模型可见的工具
 
-7 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
-从代码渲染）。合计 9644 字符 schema ≈ 2.4k tokens（`wayland_session_list` 兼作依赖 doctor，所以没有再占一个工具的 schema）。
+8 个工具，见 [docs/tool-definitions.md](docs/tool-definitions.md)（由 `.probe/render-tools.mjs`
+从代码渲染）。合计 9801 字符 schema ≈ 2.5k tokens（`wayland_session_list` 只列会话，**诊断全部归 `wayland_check`**：拆开后每个工具的描述只讲一件事，代价是它自己的约 370 字符描述 —— 净 +157 字符）。
 措辞原则：**描述必须与实现逐条对得上**——坐标系（`scale` 会改变像素↔坐标的换算）、返回时机
 （指针动作返回时合成器已处理）、失败方式（关一个已关闭的 id 会报错；非法载荷在发出任何事件前
 就被拒掉，并点名第几条、哪个字段）都写在模型要读的那段里；实现支持但 schema 没声明的旋钮不留
@@ -321,7 +321,7 @@ sudo pacman -S sway grim wtype wlrctl foot wl-clipboard     # Arch
 **重装要先卸载。** `install_bundle` 对"已经装好、spec 又完全相同"的 bundle 会走
 `installed.length !== 1` 分支报 `ambiguous-install`——pnpm 层其实只回一句 `Already up to date`，
 profile 文件一个字都不改，所以那不是真重装。实测可行的重装是
-`remove_bundle dsh-wayland` → `install_bundle link:<仓库>/plugin`：卸载会立刻注销 7 个工具、
+`remove_bundle dsh-wayland` → `install_bundle link:<仓库>/plugin`：卸载会立刻注销 8 个工具、
 回收所有会话（`sessionRoot` 只剩 `token`），重装后工具与面板都重新注册；token 因为是
 复用文件而不变，页面里的面板不需要重新取 token（但 `client.js` 有改动时仍要刷新页面，见 §3.5）。
 
@@ -425,6 +425,16 @@ profile 文件一个字都不改，所以那不是真重装。实测可行的重
   "Errors if window is not currently mapped."。保留了 "At the default scale … where pointer actions land"：
   它讲的是**默认路径**上的跨工具契约（截图坐标 = `wayland_input` 的 x/y），而 `scale` 参数那句是从换算角度说的。
   schema 总量 9852 → 9644。
+- 接着把**诊断从各工具里剥出来**，做成第 8 个工具 `wayland_check`：`wayland_session_list` 只列会话，
+  `wayland_session_create` 不再提依赖报告，失败信息仍然就是那份报告（`dependencyError()` 在报告末尾
+  加一句指路）。理由是两件事的生命周期无关——"有哪些桌面" vs "这台机器上这东西能不能跑"——而描述的钱
+  每轮都要付、诊断却只在失败时才需要；顺带把自检做厚：已解析的二进制用**无副作用探针**真跑一遍
+  （`sway --version` / `grim -h` / `wtype` 用法文本，补上"只看存在性"的盲区）、`sessionRoot` 可写性、
+  以及每个会话一行体检（合成器存活 / sway IPC 版本 / Xwayland 显示号 / 是否提供
+  `zwlr_virtual_pointer_manager_v1`——用**只读探测**，绝不建临时设备：临时设备正是 §3.3 里丢 click 的
+  根因）。`.probe/check-degraded.mjs` 跟着改为校验 `wayland_check` 的形状，并断言"什么都没解析出来时
+  不许报 ok"；`.probe/check-pointer.mjs` 增加只读探测的三条断言（有协议/无协议/连不上，且都不建设备）。
+  schema 9644 → 9801 字符（新工具自己的描述约 370 字符）。
 
 **已验证（实测，第一轮）**：7 个工具端到端（`create → launch → windows → screenshot → input`，图像真的回到上下文）；
 按窗口裁剪；非 ASCII（中文）经剪贴板输入；绝对坐标点击能切换两个窗口的焦点；20 fps 循环；
@@ -448,7 +458,7 @@ client 侧用 cordis Client inspect 读到实时插槽树里 `sidebar.right.pane
 工具报依赖而不是 `unknown session`、返回结构（含 `installHints`）通过真实 schema 校验；部分缺失时
 只报缺的那些；齐全时翻成 ready；报告里不含任何发行版特有机制（校验脚本会拦下这类文案）；
 包名/client id/patch 行名三处一致且 `files`/`exports`/icon/locale 齐全（`check-identity.mjs`）；
-7 个工具的 schema 通过真实校验器（`check-plugin.mjs`）。`npm pack --dry-run` 打 9 个文件 34.2 kB。
+8 个工具的 schema 通过真实校验器（`check-plugin.mjs`）。`npm pack --dry-run` 打 9 个文件 34.2 kB。
 `.probe/render-tools.mjs` 补上缺失的 `node:path`/`node:url` 导入后可以重渲染，产物与磁盘上的
 `docs/tool-definitions.md` **字节相同**（sha256 一致），所以 §5 的 7302 字符确实来自代码而不是手抄。
 四个脚本都按自身位置定位仓库、按运行中的 DSH 定位工具运行时（`$DSH_TOOLS` → `--app-path` → 父进程链），
@@ -536,7 +546,7 @@ active，见上一节；组件树渲染出的像素不在其中）。可以间�
 - **xterm 在无头会话里花屏**（Xwayland 字体/渲染路径），用 `foot` / `konsole`；它仍留在
   "可选"表里只是为了不把已有部署判成缺依赖，实际体检只报"存在与否"、不报"能不能用"。
 - `wayvnc` / `wf-recorder` 目前是**幽灵依赖**：会被解析、但没有任何调用点（见 §9 未做项）。
-- 依赖体检只看存在性（`existsSync`），不校验版本、不校验可执行位；版本不对时要靠报错内容自查。
+- **依赖解析**只看存在性（`existsSync`），不校验版本、也不校验可执行位；`wayland_check` 会额外把已解析的二进制用无副作用的探针跑一遍（`sway --version` / `grim -h` / `wtype` 用法文本…）来区分"能跑"与"存在但起不来"（缺共享库那类），但**仍不校验版本号**——版本不对只能靠报错内容自查。
 - **指针降级路径的 click 仍可能丢**：合成器没有 `zwlr_virtual_pointer_manager_v1` 时，插件退回
   `swaymsg seat … cursor set` + `wlrctl`，而 `wlrctl` 每次新建/销毁虚拟指针正是 §3.3 里那个
   丢 click 的形态——所以那时只能保证移动与键盘，click 不可靠（sway/wlroots 一直提供该协议，
