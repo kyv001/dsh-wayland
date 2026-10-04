@@ -1,0 +1,12 @@
+# 依赖与包产物。本仓是 link 安装的插件源，发布物由 plugin/package.json 的 files 决定；
+# npm pack 会在 plugin/ 下留 tarball，node_modules 只在别人 npm i 本仓时出现。
+node_modules/
+*.tgz
+
+# .probe/ 离线校验的临时工作目录：每个脚本自建自删，异常退出时可能残留。
+.probe/.tmp-*/
+
+# 编辑器与操作系统噪音。
+.DS_Store
+*.swp
+*~

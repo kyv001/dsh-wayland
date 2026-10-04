@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Wayland Sessions",
+    "description": "Headless Wayland desktops in the right sidebar, with agent tools to launch GUI programs, screenshot them and inject input. Needs sway, grim, wtype and wlrctl on PATH or in the configured binDir."
+  }
+}

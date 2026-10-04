@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Wayland 会话",
+    "description": "在右栏运行无头 Wayland 桌面，并给模型一套工具去启动图形程序、截图和注入输入。需要 PATH 或配置的 binDir 里有 sway、grim、wtype、wlrctl。"
+  }
+}

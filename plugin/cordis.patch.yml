@@ -1,0 +1,14 @@
+# Bundle layer for dsh-wayland.
+#
+# This file ships with the npm package, so it must stay machine-independent:
+# the wlroots toolchain is looked up in PATH by default. To pin a specific
+# toolchain directory, override it in *your* profile patch (or through the
+# Plugin Manager), which is applied after bundle layers:
+#
+#   - id: dsh-wayland
+#     config:
+#       binDir: /abs/path/to/toolchain/bin
+#
+- insert:
+    - id: dsh-wayland
+      name: 'dsh-wayland'
