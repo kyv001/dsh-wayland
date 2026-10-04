@@ -43,6 +43,15 @@ ok(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version), `version "${man
 ok(typeof manifest.license === 'string', 'package.json declares no license')
 ok(existsSync(join(ROOT, 'LICENSE')), 'LICENSE file is missing although the package declares a license')
 
+/* 2b. Two copies, one text: the package ships plugin/LICENSE, the repository
+   carries the conventional root copy, and they must not drift apart. */
+const packageLicense = existsSync(join(ROOT, 'LICENSE')) ? readFileSync(join(ROOT, 'LICENSE'), 'utf8') : ''
+const rootLicensePath = join(HERE, '..', 'LICENSE')
+const rootLicense = existsSync(rootLicensePath) ? readFileSync(rootLicensePath, 'utf8') : null
+ok(rootLicense !== null, 'the repository root has no LICENSE copy')
+ok(rootLicense === packageLicense, 'the root LICENSE and plugin/LICENSE differ; keep the two copies identical')
+ok(/^Copyright \(c\) \d{4} .+$/m.test(packageLicense), 'LICENSE carries no "Copyright (c) <year> <holder>" line')
+
 /* 3. The declarations DSH reads. */
 ok(manifest.dsh?.bundle?.patch === './cordis.patch.yml', 'dsh.bundle.patch must point at ./cordis.patch.yml')
 ok(manifest.dsh?.client?.platform === 'web', 'dsh.client.platform must be "web"')

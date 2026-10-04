@@ -31,6 +31,7 @@
 ## 2. 目录结构
 
 ```
+LICENSE                 MIT（根目录副本；与 plugin/LICENSE 逐字节一致，由 `.probe/check-identity.mjs` 核对）
 plugin/                 DSH bundle（源码即安装源，link 安装）
   host.js               Host half：会话管理器 + 依赖探测/报告 + HTTP 取帧/控制服务 + 7 个工具定义（约 1550 行）
   pointer.js            会话级持久虚拟指针：手写 Wayland 协议（只用 node 内置），绝对定位 + 按键 + 滚轮（约 350 行）
